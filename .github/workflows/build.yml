@@ -1,28 +1,41 @@
-name: Build ESP32-S3 Firmware
+name: Build Firmware
 
 on:
   push:
-    paths:
-      - "code/**"
-      - ".github/workflows/build.yml"
+    branches:
+      - master
+    tags:
+      - "v*"
   pull_request:
-    paths:
-      - "code/**"
-      - ".github/workflows/build.yml"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build-esp32s3:
-    name: ESP32-S3 SuperMini
+  build:
+    name: Build ${{ matrix.name }}
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: esp32c3
+            name: ESP32-C3 SuperMini
+            fqbn: esp32:esp32:esp32c3:CDCOnBoot=cdc,FlashSize=4M,PartitionScheme=huge_app
+            chip: esp32c3
+            define: SMS_BOARD_C3
+          - id: esp32s3
+            name: ESP32-S3 SuperMini
+            fqbn: esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=4M,PartitionScheme=huge_app,PSRAM=disabled
+            chip: esp32s3
+            define: SMS_BOARD_S3
 
     env:
       SKETCH_DIR: code
-      BUILD_DIR: build/esp32s3
-      FQBN: esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=4M,PartitionScheme=huge_app,PSRAM=disabled
+      BUILD_DIR: build/${{ matrix.id }}
+      DIST_DIR: dist
 
     steps:
       - name: Checkout repository
@@ -47,17 +60,60 @@ jobs:
         run: |
           mkdir -p "$BUILD_DIR"
           arduino-cli compile \
-            --fqbn "$FQBN" \
+            --fqbn "${{ matrix.fqbn }}" \
+            --build-property "compiler.cpp.extra_flags=-D${{ matrix.define }}" \
             --output-dir "$BUILD_DIR" \
             --export-binaries \
             "$SKETCH_DIR"
 
+      - name: Create merged flash image
+        run: |
+          mkdir -p "$DIST_DIR"
+
+          APP_BIN="$(find "$BUILD_DIR" -maxdepth 1 -name '*.ino.bin' | head -n 1)"
+          BOOT_BIN="$(find "$BUILD_DIR" -maxdepth 1 -name '*.bootloader.bin' | head -n 1)"
+          PART_BIN="$(find "$BUILD_DIR" -maxdepth 1 \( -name '*.partitions.bin' -o -name 'partitions.bin' \) | head -n 1)"
+          ESPTOOL="$(find "$HOME/.arduino15/packages/esp32/tools/esptool_py" -type f -name 'esptool.py' | sort -V | tail -n 1)"
+
+          test -n "$APP_BIN"
+          test -n "$BOOT_BIN"
+          test -n "$PART_BIN"
+          test -n "$ESPTOOL"
+
+          python "$ESPTOOL" \
+            --chip "${{ matrix.chip }}" \
+            merge_bin \
+            --flash_mode dio \
+            --flash_freq 80m \
+            --flash_size 4MB \
+            -o "$DIST_DIR/sms-forwarding-${{ matrix.id }}.bin" \
+            0x0 "$BOOT_BIN" \
+            0x8000 "$PART_BIN" \
+            0x10000 "$APP_BIN"
+
+          ls -lh "$DIST_DIR"
+
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sms-forwarding-esp32s3-firmware
+          name: sms-forwarding-${{ matrix.id }}
           if-no-files-found: error
-          path: |
-            build/esp32s3/*.bin
-            build/esp32s3/*.elf
-            build/esp32s3/*.map
+          path: dist/*.bin
+
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*.bin
