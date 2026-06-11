@@ -99,6 +99,10 @@ int serialBufLen = 0;
 #define MAX_CONCAT_PARTS 10       // 最大支持的长短信分段数
 #define CONCAT_TIMEOUT_MS 30000   // 长短信等待超时时间(毫秒)
 #define MAX_CONCAT_MESSAGES 5     // 最多同时缓存的长短信组数
+#define SMS_STORAGE "ME"          // 默认使用模块内部短信存储，避免占用SIM卡短信容量
+#define SMS_STORAGE_RESERVED_FREE 20
+#define MAX_SMS_CLEANUP_INDEXES 160
+#define MAX_SMS_LIST_CONCAT_GROUPS 20
 
 // 长短信分段结构
 struct SmsPart {
@@ -119,6 +123,25 @@ struct ConcatSms {
 };
 
 ConcatSms concatBuffer[MAX_CONCAT_MESSAGES];  // 长短信缓存
+
+struct SmsStorageInfo {
+  bool valid;
+  int used;
+  int total;
+};
+
+struct SmsListConcatGroup {
+  bool inUse;
+  int refNumber;
+  String sender;
+  String timestamp;
+  int totalParts;
+  int receivedParts;
+  int status;
+  String indexes;
+  String parts[MAX_CONCAT_PARTS];
+  bool partValid[MAX_CONCAT_PARTS];
+};
 
 // 保存配置到NVS
 void saveConfig() {
@@ -767,10 +790,10 @@ const char* htmlToolsPage = R"rawliteral(
       <div class="result-box" id="queryResult"></div>
     </div>
 
-    <div class="section">
-      <div class="section-title">推送测试与调试</div>
+    <details class="section" id="pushDebugPanel">
+      <summary class="section-title" style="cursor:pointer;">推送测试与调试</summary>
       <div class="btn-group">
-        <button type="button" class="btn-info" id="pushDebugToggleBtn" onclick="togglePushDebug()">开启推送调试</button>
+        <button type="button" class="btn-info" id="pushDebugToggleBtn" onclick="togglePushDebug()">开启推送日志</button>
         <button type="button" class="btn-query" id="testPushBtn" onclick="testPush()">测试推送</button>
       </div>
       <div class="btn-group">
@@ -779,13 +802,13 @@ const char* htmlToolsPage = R"rawliteral(
       </div>
       <div class="hint">开启后会在串口和本页面记录推送请求、请求体、响应码和响应内容；关闭后不记录，避免污染其他调试。</div>
       <div class="result-box" id="testPushResult"></div>
-      <div id="pushDebugLog" style="background:#222;color:#d6ffd6;font-family:'Courier New',monospace;min-height:120px;max-height:320px;overflow-y:auto;padding:10px;border-radius:5px;margin-top:10px;font-size:12px;white-space:pre-wrap;word-break:break-all;">暂无推送调试日志</div>
-    </div>
+      <div id="pushDebugLog" style="background:#222;color:#d6ffd6;font-family:'Courier New',monospace;min-height:120px;max-height:320px;overflow-y:auto;padding:10px;border-radius:5px;margin-top:10px;font-size:12px;white-space:pre-wrap;word-break:break-all;">暂无推送日志</div>
+    </details>
 
     <div class="section">
       <div class="section-title">短信列表</div>
       <button type="button" class="btn-info" id="smsListBtn" onclick="loadSmsList()">查看所有短信</button>
-      <div class="hint">从 SIM 短信存储读取，显示已读/未读、收信时间、发信人和内容。</div>
+      <div class="hint">从模块短信存储读取，显示已读/未读、收信时间、发信人、内容和存储空间。</div>
       <div class="result-box" id="smsListResult"></div>
     </div>
     
@@ -850,9 +873,9 @@ const char* htmlToolsPage = R"rawliteral(
     function setPushDebugLog(data) {
       var log = document.getElementById('pushDebugLog');
       var toggleBtn = document.getElementById('pushDebugToggleBtn');
-      log.textContent = data.message || '暂无推送调试日志';
+      log.textContent = data.message || '暂无推送日志';
       log.scrollTop = log.scrollHeight;
-      toggleBtn.textContent = data.enabled ? '关闭推送调试' : '开启推送调试';
+      toggleBtn.textContent = data.enabled ? '关闭推送日志' : '开启推送日志';
       toggleBtn.style.background = data.enabled ? '#E91E63' : '#607D8B';
     }
 
@@ -1284,7 +1307,52 @@ bool decodeStoredSmsPdu(const String& pduLine, String& sender, String& text, Str
   return true;
 }
 
-void appendSmsCard(String& html, int index, int status, const String& sender, const String& timestamp, const String& text) {
+SmsStorageInfo parseSmsStorageInfo(const String& resp) {
+  SmsStorageInfo info = {false, 0, 0};
+
+  int lineStart = 0;
+  for (int i = 0; i <= resp.length(); i++) {
+    if (i == resp.length() || resp.charAt(i) == '\n') {
+      String line = resp.substring(lineStart, i);
+      line.trim();
+      if (line.startsWith("+CPMS:")) {
+        info.used = getCsvField(line, 0).toInt();
+        info.total = getCsvField(line, 1).toInt();
+        info.valid = info.total > 0;
+        return info;
+      }
+      lineStart = i + 1;
+    }
+  }
+
+  return info;
+}
+
+SmsStorageInfo selectSmsStorage() {
+  String cmd = "AT+CPMS=\"" + String(SMS_STORAGE) + "\",\"" + String(SMS_STORAGE) + "\",\"" + String(SMS_STORAGE) + "\"";
+  String resp = sendATCommand(cmd.c_str(), 5000);
+  Serial.println("CPMS响应: " + resp);
+  return parseSmsStorageInfo(resp);
+}
+
+String smsStorageHtml(const SmsStorageInfo& info) {
+  if (!info.valid) {
+    return "<div>模块短信存储空间: 查询失败</div>";
+  }
+
+  int freeCount = info.total - info.used;
+  if (freeCount < 0) freeCount = 0;
+
+  String html = "<div>";
+  html += "模块短信存储(" + String(SMS_STORAGE) + "): 已用 " + String(info.used);
+  html += " / 总容量 " + String(info.total);
+  html += " | 剩余 " + String(freeCount);
+  html += " | 目标保留空位 " + String(SMS_STORAGE_RESERVED_FREE);
+  html += "</div>";
+  return html;
+}
+
+void appendSmsCard(String& html, const String& indexLabel, int status, const String& sender, const String& timestamp, const String& text) {
   String displayTimestamp = timestamp.length() ? timestamp : String("-");
   String displaySender = sender.length() ? sender : String("-");
   String displayText = text.length() ? text : String("(空短信)");
@@ -1292,7 +1360,7 @@ void appendSmsCard(String& html, int index, int status, const String& sender, co
   html += "<div class='sms-card'>";
   html += "<div class='sms-meta'>";
   html += "<span class='sms-badge " + smsStatusClass(status) + "'>" + smsStatusText(status) + "</span>";
-  html += "索引: " + String(index);
+  html += "索引: " + htmlEscape(indexLabel);
   html += " | 收信时间: " + htmlEscape(displayTimestamp);
   html += " | 发信人: " + htmlEscape(displaySender);
   html += "</div>";
@@ -1300,20 +1368,130 @@ void appendSmsCard(String& html, int index, int status, const String& sender, co
   html += "</div>";
 }
 
+int findSmsListConcatGroup(SmsListConcatGroup groups[], int refNumber, const String& sender, int totalParts) {
+  for (int i = 0; i < MAX_SMS_LIST_CONCAT_GROUPS; i++) {
+    if (groups[i].inUse &&
+        groups[i].refNumber == refNumber &&
+        groups[i].sender == sender &&
+        groups[i].totalParts == totalParts) {
+      return i;
+    }
+  }
+
+  for (int i = 0; i < MAX_SMS_LIST_CONCAT_GROUPS; i++) {
+    if (!groups[i].inUse) {
+      groups[i].inUse = true;
+      groups[i].refNumber = refNumber;
+      groups[i].sender = sender;
+      groups[i].timestamp = "";
+      groups[i].totalParts = totalParts;
+      groups[i].receivedParts = 0;
+      groups[i].status = 1;
+      groups[i].indexes = "";
+      for (int j = 0; j < MAX_CONCAT_PARTS; j++) {
+        groups[i].parts[j] = "";
+        groups[i].partValid[j] = false;
+      }
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+String assembleSmsListConcatText(const SmsListConcatGroup& group) {
+  String text = "";
+  for (int i = 0; i < group.totalParts && i < MAX_CONCAT_PARTS; i++) {
+    if (group.partValid[i]) {
+      text += group.parts[i];
+    } else {
+      text += "[缺失分段" + String(i + 1) + "]";
+    }
+  }
+  return text;
+}
+
+void appendSmsListConcatGroups(String& html, SmsListConcatGroup groups[], int& count) {
+  for (int i = 0; i < MAX_SMS_LIST_CONCAT_GROUPS; i++) {
+    if (!groups[i].inUse) continue;
+
+    String text = assembleSmsListConcatText(groups[i]);
+    if (groups[i].receivedParts < groups[i].totalParts) {
+      text = "[长短信未收齐 " + String(groups[i].receivedParts) + "/" + String(groups[i].totalParts) + "] " + text;
+    }
+    appendSmsCard(html, groups[i].indexes, groups[i].status, groups[i].sender, groups[i].timestamp, text);
+    count++;
+  }
+}
+
+void collectSmsIndexFromCmgl(const String& resp, int indexes[], int& indexCount) {
+  indexCount = 0;
+  int lineStart = 0;
+  for (int i = 0; i <= resp.length(); i++) {
+    if (i == resp.length() || resp.charAt(i) == '\n') {
+      String line = resp.substring(lineStart, i);
+      line.trim();
+      if (line.startsWith("+CMGL:") && indexCount < MAX_SMS_CLEANUP_INDEXES) {
+        indexes[indexCount++] = getCsvField(line, 0).toInt();
+      }
+      lineStart = i + 1;
+    }
+  }
+}
+
+void cleanupSmsStorageReserve() {
+  SmsStorageInfo info = selectSmsStorage();
+  if (!info.valid) {
+    Serial.println("短信存储空间查询失败，跳过清理");
+    return;
+  }
+
+  int freeCount = info.total - info.used;
+  if (freeCount >= SMS_STORAGE_RESERVED_FREE) {
+    Serial.println("模块短信存储空位充足: " + String(freeCount));
+    return;
+  }
+
+  int deleteNeeded = SMS_STORAGE_RESERVED_FREE - freeCount;
+  Serial.println("模块短信存储空位不足，准备清理 " + String(deleteNeeded) + " 条短信");
+
+  sendATCommand("AT+CMGF=0", 2000);
+  String resp = sendATCommand("AT+CMGL=4", 15000);
+  int indexes[MAX_SMS_CLEANUP_INDEXES];
+  int indexCount = 0;
+  collectSmsIndexFromCmgl(resp, indexes, indexCount);
+
+  int deleted = 0;
+  for (int i = 0; i < indexCount && deleted < deleteNeeded; i++) {
+    if (indexes[i] <= 0) continue;
+    String cmd = "AT+CMGD=" + String(indexes[i]);
+    String delResp = sendATCommand(cmd.c_str(), 5000);
+    if (delResp.indexOf("OK") >= 0) {
+      deleted++;
+      Serial.println("已删除模块短信索引: " + String(indexes[i]));
+    } else {
+      Serial.println("删除模块短信失败，索引: " + String(indexes[i]) + " 响应: " + delResp);
+    }
+  }
+
+  Serial.println("模块短信清理完成，已删除 " + String(deleted) + " 条");
+}
+
 void handleSmsList() {
   if (!checkAuth()) return;
 
   Serial.println("网页端读取短信列表");
-  sendATCommand("AT+CPMS=\"SM\",\"SM\",\"SM\"", 5000);
+  SmsStorageInfo storageInfo = selectSmsStorage();
   sendATCommand("AT+CMGF=0", 2000);
   String resp = sendATCommand("AT+CMGL=4", 15000);
   Serial.println("CMGL响应: " + resp);
 
-  String html = "";
+  String html = smsStorageHtml(storageInfo);
   bool success = resp.indexOf("OK") >= 0;
   int count = 0;
   int currentIndex = -1;
   int currentStatus = -1;
+  SmsListConcatGroup concatGroups[MAX_SMS_LIST_CONCAT_GROUPS] = {};
 
   int lineStart = 0;
   for (int i = 0; i <= resp.length(); i++) {
@@ -1327,8 +1505,34 @@ void handleSmsList() {
       } else if (currentIndex >= 0 && isLikelyPduLine(line)) {
         String sender, text, timestamp;
         if (decodeStoredSmsPdu(line, sender, text, timestamp)) {
-          appendSmsCard(html, currentIndex, currentStatus, sender, timestamp, text);
-          count++;
+          String displayTimestamp = formatSmsTimestamp(timestamp);
+          int* concatInfo = pdu.getConcatInfo();
+          int refNumber = concatInfo[0];
+          int partNumber = concatInfo[1];
+          int totalParts = concatInfo[2];
+
+          if (totalParts > 1 && partNumber > 0 && totalParts <= MAX_CONCAT_PARTS) {
+            int groupIndex = findSmsListConcatGroup(concatGroups, refNumber, sender, totalParts);
+            if (groupIndex >= 0) {
+              SmsListConcatGroup& group = concatGroups[groupIndex];
+              int partIndex = partNumber - 1;
+              if (!group.partValid[partIndex]) {
+                group.partValid[partIndex] = true;
+                group.parts[partIndex] = text;
+                group.receivedParts++;
+              }
+              if (group.timestamp.length() == 0) group.timestamp = displayTimestamp;
+              if (currentStatus == 0) group.status = 0;
+              if (group.indexes.length() > 0) group.indexes += ",";
+              group.indexes += String(currentIndex);
+            } else {
+              appendSmsCard(html, String(currentIndex), currentStatus, sender, displayTimestamp, text);
+              count++;
+            }
+          } else {
+            appendSmsCard(html, String(currentIndex), currentStatus, sender, displayTimestamp, text);
+            count++;
+          }
         } else {
           html += "<div class='sms-card'><div class='sms-meta'>索引: " + String(currentIndex) + " | 解码失败</div>";
           html += "<div class='sms-body'>" + htmlEscape(line) + "</div></div>";
@@ -1342,8 +1546,10 @@ void handleSmsList() {
     }
   }
 
+  appendSmsListConcatGroups(html, concatGroups, count);
+
   if (success && count == 0) {
-    html = "SIM 短信存储中没有短信。";
+    html += "模块短信存储中没有短信。";
   } else if (!success) {
     html = "模块返回异常:<br><pre>" + htmlEscape(resp) + "</pre>";
   }
@@ -2083,9 +2289,9 @@ void handleSave() {
 )rawliteral";
   server.send(200, "text/html", html);
   
-  // 如果配置有效，发送启动通知
+  // 如果配置有效，发送配置更新邮件通知
   if (configValid) {
-    Serial.println("配置有效，发送启动通知...");
+    Serial.println("配置有效，发送配置更新邮件通知...");
     String subject = "短信转发器配置已更新";
     String body = "设备配置已更新\n设备地址: " + getDeviceUrl();
     sendEmailNotification(subject.c_str(), body.c_str());
@@ -2428,6 +2634,7 @@ void clearConcatSlot(int slot) {
 
 // 前置声明
 void processSmsContent(const char* sender, const char* text, const char* timestamp);
+void cleanupSmsStorageReserve();
 
 // 检查长短信超时并转发
 void checkConcatTimeout() {
@@ -2448,6 +2655,7 @@ void checkConcatTimeout() {
         processSmsContent(concatBuffer[i].sender.c_str(), 
                          fullText.c_str(), 
                          concatBuffer[i].timestamp.c_str());
+        cleanupSmsStorageReserve();
         
         // 清空槽位
         clearConcatSlot(i);
@@ -2533,11 +2741,21 @@ String jsonEscape(const String& str) {
 }
 
 // 发送单个推送通道
+String formatUptimeClock() {
+  unsigned long totalSeconds = millis() / 1000;
+  unsigned long hours = totalSeconds / 3600;
+  unsigned long minutes = (totalSeconds / 60) % 60;
+  unsigned long seconds = totalSeconds % 60;
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%02lu:%02lu:%02lu", hours, minutes, seconds);
+  return String(buf);
+}
+
 void appendPushDebugLog(const String& line) {
   if (!pushDebugEnabled) return;
 
-  String entry = "[" + String(millis()) + "ms] " + line;
-  Serial.println("[PushDebug] " + line);
+  String entry = "[" + formatUptimeClock() + "] " + line;
+  Serial.println("[PushDebug] " + entry);
   pushDebugLog += entry + "\n";
 
   if (pushDebugLog.length() > PUSH_DEBUG_LOG_MAX) {
@@ -2556,7 +2774,7 @@ void handlePushDebug() {
   String action = server.arg("action");
   if (action == "toggle") {
     pushDebugEnabled = !pushDebugEnabled;
-    appendPushDebugLog(String("推送调试已") + (pushDebugEnabled ? "开启" : "关闭"));
+    appendPushDebugLog(String("推送日志已") + (pushDebugEnabled ? "开启" : "关闭"));
   } else if (action == "clear") {
     pushDebugLog = "";
   }
@@ -2564,7 +2782,7 @@ void handlePushDebug() {
   String json = "{";
   json += "\"success\":true,";
   json += "\"enabled\":" + String(pushDebugEnabled ? "true" : "false") + ",";
-  json += "\"message\":\"" + jsonEscape(pushDebugLog.length() ? pushDebugLog : "暂无推送调试日志") + "\"";
+  json += "\"message\":\"" + jsonEscape(pushDebugLog.length() ? pushDebugLog : "暂无推送日志") + "\"";
   json += "}";
   server.send(200, "application/json", json);
 }
@@ -2578,11 +2796,11 @@ void handleTestPush() {
 
   String json = "{";
   json += "\"success\":true,";
-  json += "\"message\":\"测试推送已执行。";
+  json += "\"message\":\"测试推送已触发。";
   if (!pushDebugEnabled) {
-    json += "推送调试日志当前关闭，如需查看请求和响应请先开启调试开关。";
+    json += "推送日志当前关闭，如需查看请求和响应请先开启日志开关。";
   } else {
-    json += "请查看下方推送调试日志。";
+    json += "是否实际发出HTTP请求请查看下方推送日志。";
   }
   json += "\"";
   json += "}";
@@ -2622,7 +2840,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
   
   HTTPClient http;
   String channelName = channel.name.length() > 0 ? channel.name : ("通道" + String(channel.type));
-  Serial.println("发送到推送通道: " + channelName);
+  appendPushDebugLog("准备发送到推送通道: " + channelName);
   
   int httpCode = 0;
   String senderEscaped = jsonEscape(String(sender));
@@ -2639,7 +2857,6 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       jsonData += "\"message\":\"" + messageEscaped + "\",";
       jsonData += "\"timestamp\":\"" + timestampEscaped + "\"";
       jsonData += "}";
-      Serial.println("POST JSON: " + jsonData);
       logPushRequest(channelName, "POST", channel.url, jsonData);
       httpCode = http.POST(jsonData);
       break;
@@ -2653,7 +2870,6 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       jsonData += "\"title\":\"" + senderEscaped + "\",";
       jsonData += "\"body\":\"" + messageEscaped + "\"";
       jsonData += "}";
-      Serial.println("BARK JSON: " + jsonData);
       logPushRequest(channelName, "POST", channel.url, jsonData);
       httpCode = http.POST(jsonData);
       break;
@@ -2670,7 +2886,6 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       getUrl += "sender=" + urlEncode(String(sender));
       getUrl += "&message=" + urlEncode(String(message));
       getUrl += "&timestamp=" + urlEncode(String(timestamp));
-      Serial.println("GET URL: " + getUrl);
       http.begin(getUrl);
       logPushRequest(channelName, "GET", getUrl, "");
       httpCode = http.GET();
@@ -2702,7 +2917,6 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       String jsonData = "{\"msgtype\":\"text\",\"text\":{\"content\":\"";
       jsonData += "📱短信通知\\n发送者: " + senderEscaped + "\\n内容: " + messageEscaped + "\\n时间: " + timestampEscaped;
       jsonData += "\"}}";
-      Serial.println("钉钉: " + jsonData);
       logPushRequest(channelName, "POST", webhookUrl, jsonData);
       httpCode = http.POST(jsonData);
       break;
@@ -2720,7 +2934,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
           if (channel.key2 == "wechat" || channel.key2 == "extension" || channel.key2 == "app") {
               channelValue = channel.key2;
           } else {
-              Serial.println("Invalid PushPlus channel '" + channel.key2 + "'. Using default 'wechat'.");
+              appendPushDebugLog("[" + channelName + "] PushPlus渠道无效，使用默认wechat: " + channel.key2);
           }
       }
       String jsonData = "{";
@@ -2729,7 +2943,6 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       jsonData += "\"content\":\"<b>发送者:</b> " + senderEscaped + "<br><b>时间:</b> " + timestampEscaped + "<br><b>内容:</b><br>" + messageEscaped + "\",";
       jsonData += "\"channel\":\"" + channelValue + "\"";
       jsonData += "}";
-      Serial.println("PushPlus: " + jsonData);
       logPushRequest(channelName, "POST", pushUrl, jsonData);
       httpCode = http.POST(jsonData);
       break;
@@ -2742,7 +2955,6 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       http.addHeader("Content-Type", "application/x-www-form-urlencoded");
       String postData = "title=" + urlEncode("短信来自: " + String(sender));
       postData += "&desp=" + urlEncode("**发送者:** " + String(sender) + "\n\n**时间:** " + String(timestamp) + "\n\n**内容:**\n\n" + String(message));
-      Serial.println("Server酱: " + postData);
       logPushRequest(channelName, "POST", scUrl, postData);
       httpCode = http.POST(postData);
       break;
@@ -2751,7 +2963,6 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
     case PUSH_TYPE_CUSTOM: {
       // 自定义模板
       if (channel.customBody.length() == 0) {
-        Serial.println("自定义模板为空，跳过");
         appendPushDebugLog("[" + channelName + "] 跳过：自定义模板为空");
         return;
       }
@@ -2761,7 +2972,6 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       body.replace("{sender}", senderEscaped);
       body.replace("{message}", messageEscaped);
       body.replace("{timestamp}", timestampEscaped);
-      Serial.println("自定义: " + body);
       logPushRequest(channelName, "POST", channel.url, body);
       httpCode = http.POST(body);
       break;
@@ -2800,7 +3010,6 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       
       http.begin(webhookUrl);
       http.addHeader("Content-Type", "application/json");
-      Serial.println("飞书: " + jsonData);
       logPushRequest(channelName, "POST", webhookUrl, jsonData);
       httpCode = http.POST(jsonData);
       break;
@@ -2820,7 +3029,6 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       jsonData += "\"message\":\"" + messageEscaped + "\\n\\n时间: " + timestampEscaped + "\",";
       jsonData += "\"priority\":5";
       jsonData += "}";
-      Serial.println("Gotify: " + jsonData);
       logPushRequest(channelName, "POST", gotifyUrl, jsonData);
       httpCode = http.POST(jsonData);
       break;
@@ -2842,38 +3050,33 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       jsonData += "\"text\":\"" + text + "\"";
       jsonData += "}";
       
-      Serial.println("Telegram: " + jsonData);
       logPushRequest(channelName, "POST", tgUrl, jsonData);
       httpCode = http.POST(jsonData);
       break;
     }
     
     default:
-      Serial.println("未知推送类型");
+      appendPushDebugLog("未知推送类型: " + String(channel.type));
       return;
   }
   
   if (httpCode > 0) {
-    Serial.printf("[%s] 响应码: %d\n", channelName.c_str(), httpCode);
     String response = http.getString();
     logPushResponse(channelName, httpCode, response);
-    if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_CREATED) {
-      Serial.println("响应: " + response);
-    }
   } else {
     String err = http.errorToString(httpCode);
     logPushResponse(channelName, httpCode, err);
-    Serial.printf("[%s] HTTP请求失败: %s\n", channelName.c_str(), err.c_str());
   }
   http.end();
 }
 
 // 发送短信到所有启用的推送通道
 void sendSMSToServer(const char* sender, const char* message, const char* timestamp) {
-  printWiFiDiagnostics("准备HTTP推送");
+  if (pushDebugEnabled) {
+    printWiFiDiagnostics("准备HTTP推送");
+  }
   appendPushDebugLog("准备推送短信，发送者=" + String(sender) + "，时间=" + String(timestamp));
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi未连接，跳过推送");
     appendPushDebugLog("推送取消：WiFi未连接，状态=" + wifiStatusText(WiFi.status()));
     return;
   }
@@ -2887,21 +3090,18 @@ void sendSMSToServer(const char* sender, const char* message, const char* timest
   }
   
   if (!hasEnabledChannel) {
-    Serial.println("没有启用的推送通道");
     appendPushDebugLog("推送取消：没有启用且配置完整的推送通道");
     return;
   }
   
-  Serial.println("\n=== 开始多通道推送 ===");
-  appendPushDebugLog("开始多通道推送");
+  appendPushDebugLog("开始多通道推送请求尝试");
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
     if (isPushChannelValid(config.pushChannels[i])) {
       sendToChannel(config.pushChannels[i], sender, message, timestamp);
       delay(100); // 短暂延迟避免请求过快
     }
   }
-  appendPushDebugLog("多通道推送完成");
-  Serial.println("=== 多通道推送完成 ===\n");
+  appendPushDebugLog("多通道推送请求尝试完成");
 }
 
 // 读取串口一行（含回车换行），返回行字符串，无新行时返回空
@@ -2946,7 +3146,9 @@ void processSmsContent(const char* sender, const char* text, const char* timesta
   Serial.println("时间戳: " + formattedTimestamp);
   Serial.println("内容: " + String(text));
   Serial.println("====================");
-  printWiFiDiagnostics("短信到达");
+  if (pushDebugEnabled) {
+    printWiFiDiagnostics("短信到达");
+  }
 
   // 检查是否在号码黑名单中
   if (isInNumberBlackList(sender)) {
@@ -3036,12 +3238,14 @@ bool submitIncomingPdu(const String& pduLine, const String& source, int storageI
                        fullText.c_str(),
                        concatBuffer[slot].timestamp.c_str());
       clearConcatSlot(slot);
+      return true;
     }
+
+    return false;
   } else {
     processSmsContent(pdu.getSender(), pdu.getText(), pdu.getTimeStamp());
+    return true;
   }
-
-  return true;
 }
 
 bool readStoredSmsByIndex(int smsIndex) {
@@ -3068,7 +3272,11 @@ bool readStoredSmsByIndex(int smsIndex) {
   }
 
   Serial.println("读取存储短信成功，索引: " + String(smsIndex));
-  return submitIncomingPdu(pduLine, "CMTI", smsIndex);
+  bool messageReady = submitIncomingPdu(pduLine, "CMTI", smsIndex);
+  if (messageReady) {
+    cleanupSmsStorageReserve();
+  }
+  return messageReady;
 }
 
 // 处理URC和PDU
@@ -3200,12 +3408,12 @@ void setup() {
   }
   Serial.println("已禁用数据连接(AT+CGACT=0,1)，防止流量消耗");
   
-  // 选择 SIM 短信存储，便于网页端列出已读/未读短信
-  while (!sendATandWaitOK("AT+CPMS=\"SM\",\"SM\",\"SM\"", 3000)) {
+  // 选择模块内部短信存储，避免占用SIM卡短信容量
+  while (!sendATandWaitOK("AT+CPMS=\"" SMS_STORAGE "\",\"" SMS_STORAGE "\",\"" SMS_STORAGE "\"", 3000)) {
     Serial.println("设置CPMS失败，重试...");
     blink_short();
   }
-  Serial.println("CPMS短信存储设置完成");
+  Serial.println("CPMS短信存储设置完成，当前存储: " SMS_STORAGE);
   
   //设置短信自动上报
   while (!sendATandWaitOK("AT+CNMI=2,1,0,0,0", 1000)) {
@@ -3278,9 +3486,9 @@ void setup() {
   ssl_client.setInsecure();
   digitalWrite(LED_BUILTIN, LOW);
   
-  // 如果配置有效，发送启动通知
+  // 如果配置有效，发送启动邮件通知
   if (configValid) {
-    Serial.println("配置有效，发送启动通知...");
+    Serial.println("配置有效，发送启动邮件通知...");
     String subject = "短信转发器已启动";
     String body = "设备已启动\n设备地址: " + getDeviceUrl();
     sendEmailNotification(subject.c_str(), body.c_str());
