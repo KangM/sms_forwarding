@@ -73,14 +73,24 @@ jobs:
           APP_BIN="$(find "$BUILD_DIR" -maxdepth 1 -name '*.ino.bin' | head -n 1)"
           BOOT_BIN="$(find "$BUILD_DIR" -maxdepth 1 -name '*.bootloader.bin' | head -n 1)"
           PART_BIN="$(find "$BUILD_DIR" -maxdepth 1 \( -name '*.partitions.bin' -o -name 'partitions.bin' \) | head -n 1)"
-          ESPTOOL="$(find "$HOME/.arduino15/packages/esp32/tools/esptool_py" -type f -name 'esptool.py' | sort -V | tail -n 1)"
+          ESPTOOL="$(find "$HOME/.arduino15/packages/esp32/tools/esptool_py" -type f \( -name 'esptool.py' -o -name 'esptool' \) | sort -V | tail -n 1)"
+
+          echo "Generated bin files:"
+          find "$BUILD_DIR" -maxdepth 1 -type f -name '*.bin' -print
+          echo "ESPTOOL=$ESPTOOL"
 
           test -n "$APP_BIN"
           test -n "$BOOT_BIN"
           test -n "$PART_BIN"
           test -n "$ESPTOOL"
 
-          python "$ESPTOOL" \
+          if [[ "$ESPTOOL" == *.py ]]; then
+            ESPTOOL_CMD=(python "$ESPTOOL")
+          else
+            ESPTOOL_CMD=("$ESPTOOL")
+          fi
+
+          "${ESPTOOL_CMD[@]}" \
             --chip "${{ matrix.chip }}" \
             merge_bin \
             --flash_mode dio \
