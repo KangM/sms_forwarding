@@ -107,3 +107,76 @@ ESP32C3 与 ML307R-DC 通过串口（UART）连接，接线如下：
 - **pdulib** by David Henry
 
 需要在`Arduino IDE`中安装ESP32开发板支持，参考[官方文档](https://docs.espressif.com/projects/arduino-esp32/en/latest/installing.html)，版型选`MakerGO ESP32 C3 SuperMini`。
+
+## ESP32-C3 原项目引脚说明
+
+原项目面向 ESP32C3 Super Mini 开发板，代码中的默认串口和模块控制引脚如下：
+
+```cpp
+#define TXD 3
+#define RXD 4
+#define MODEM_EN_PIN 5
+```
+
+对应接线关系：
+
+| ESP32C3 Super Mini | ML307R-DC 模块 | 说明 |
+| --- | --- | --- |
+| GPIO3 / TX | RX | ESP32C3 向模块发送 AT 数据 |
+| GPIO4 / RX | TX | ESP32C3 接收模块返回数据 |
+| GPIO5 | EN | 控制模块断电/上电重启 |
+| GND | GND | 共地 |
+| 5V | VCC / 5V | 模块供电 |
+
+注意：串口 TX/RX 需要交叉连接，即开发板 TX 接模块 RX，开发板 RX 接模块 TX。
+
+## 当前 ESP32-S3 SuperMini 使用说明
+
+当前分支已改为适配手头的 ESP32-S3 SuperMini 开发板。代码中的引脚配置如下：
+
+```cpp
+#define TXD 43
+#define RXD 44
+#define MODEM_EN_PIN 5
+
+#ifndef LED_BUILTIN
+#define LED_BUILTIN 48
+#endif
+```
+
+对应接线关系：
+
+| ESP32-S3 SuperMini | ML307R-DC 模块 | 说明 |
+| --- | --- | --- |
+| GPIO43 / TX | RX | ESP32-S3 向模块发送 AT 数据 |
+| GPIO44 / RX | TX | ESP32-S3 接收模块返回数据 |
+| GPIO5 | EN | 控制模块断电/上电重启 |
+| GND | GND | 共地 |
+| 5V | VCC / 5V | 模块供电 |
+
+如果烧录时失败，可以先断开 ML307R-DC 的 TX/RX，烧录完成后再接回模块并复位开发板。
+
+## Arduino IDE 配置说明
+
+当前开发板建议在 Arduino IDE 中使用以下配置：
+
+| 配置项 | 推荐值 |
+| --- | --- |
+| 开发板 | `ESP32S3 Dev Module` |
+| Flash Size | `4MB (32Mb)` |
+| Partition Scheme | `Huge APP (3MB No OTA/1MB SPIFFS)` 或同类 `Huge APP / No OTA` 选项 |
+| USB CDC On Boot | `Enabled` |
+| PSRAM | `Disabled`，除非确认开发板带 PSRAM |
+| CPU Frequency | `240MHz` |
+| Upload Speed | `921600`，不稳定时改为 `115200` 或 `460800` |
+| 串口监视器波特率 | `115200` |
+
+选择 `Huge APP` 的原因是当前固件功能较多，默认 OTA 分区下单个 app 分区约 1.25MB，剩余空间较紧张。`Huge APP` 会取消 OTA 双分区，把更多 Flash 空间分配给主程序，适合通过 USB 线烧录的使用方式。
+
+切换分区方案后，建议第一次上传时在 Arduino IDE 中启用：
+
+```text
+Tools -> Erase All Flash Before Sketch Upload -> Enabled
+```
+
+这会清空 ESP32 Flash 中的运行时配置，例如 Web 管理密码、推送通道、邮箱配置等，上传完成后需要重新进入网页配置。
