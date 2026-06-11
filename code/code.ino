@@ -11,6 +11,7 @@
 #include <HTTPClient.h>
 #include <mbedtls/md.h>  // 用于钉钉签名的HMAC-SHA256
 #include <base64.h>      // Base64编码
+#include "ping/ping_sock.h"
 
 //wifi信息，需要你打开这个去改
 #include "wifi_config.h"
@@ -83,7 +84,12 @@ WebServer server(80);
 bool configValid = false;  // 配置是否有效
 bool timeSynced = false;   // NTP时间是否已同步
 String configInvalidReason = "";
+bool pushDebugEnabled = false;
+String pushDebugLog = "";
 
+#define PUSH_DEBUG_LOG_MAX 6000
+bool showWiFiDiagnostics = true;
+bool pingGatewayInWiFiDiagnostics = true;
 #define SERIAL_BUFFER_SIZE 500
 #define MAX_PDU_LENGTH 300
 char serialBuf[SERIAL_BUFFER_SIZE];
@@ -338,6 +344,133 @@ void printConfigValidationResult(const String& source) {
 // 获取当前设备URL
 String getDeviceUrl() {
   return "http://" + WiFi.localIP().toString() + "/";
+}
+
+String formatSmsTimestamp(const String& rawTimestamp) {
+  String ts = rawTimestamp;
+  ts.trim();
+
+  if (ts.length() >= 12) {
+    bool hasDigitsPrefix = true;
+    for (int i = 0; i < 12; i++) {
+      if (!isDigit(ts.charAt(i))) {
+        hasDigitsPrefix = false;
+        break;
+      }
+    }
+
+    if (hasDigitsPrefix) {
+      return ts.substring(0, 2) + "/" +
+             ts.substring(2, 4) + "/" +
+             ts.substring(4, 6) + " " +
+             ts.substring(6, 8) + ":" +
+             ts.substring(8, 10) + ":" +
+             ts.substring(10, 12);
+    }
+  }
+
+  ts.replace(",", " ");
+  return ts;
+}
+
+String wifiStatusText(wl_status_t status) {
+  switch (status) {
+    case WL_CONNECTED: return "WL_CONNECTED";
+    case WL_NO_SHIELD: return "WL_NO_SHIELD";
+    case WL_IDLE_STATUS: return "WL_IDLE_STATUS";
+    case WL_NO_SSID_AVAIL: return "WL_NO_SSID_AVAIL";
+    case WL_SCAN_COMPLETED: return "WL_SCAN_COMPLETED";
+    case WL_CONNECT_FAILED: return "WL_CONNECT_FAILED";
+    case WL_CONNECTION_LOST: return "WL_CONNECTION_LOST";
+    case WL_DISCONNECTED: return "WL_DISCONNECTED";
+    default: return "UNKNOWN(" + String((int)status) + ")";
+  }
+}
+
+struct WiFiGatewayPingResult {
+  bool success;
+  bool finished;
+  uint32_t elapsedMs;
+  uint32_t transmitted;
+  uint32_t received;
+  uint32_t totalMs;
+  uint8_t ttl;
+  SemaphoreHandle_t done;
+};
+
+static void wifiGatewayPingOnSuccess(esp_ping_handle_t hdl, void *args) {
+  WiFiGatewayPingResult* result = (WiFiGatewayPingResult*)args;
+  result->success = true;
+  esp_ping_get_profile(hdl, ESP_PING_PROF_TIMEGAP, &result->elapsedMs, sizeof(result->elapsedMs));
+  esp_ping_get_profile(hdl, ESP_PING_PROF_TTL, &result->ttl, sizeof(result->ttl));
+}
+
+static void wifiGatewayPingOnEnd(esp_ping_handle_t hdl, void *args) {
+  WiFiGatewayPingResult* result = (WiFiGatewayPingResult*)args;
+  result->finished = true;
+  esp_ping_get_profile(hdl, ESP_PING_PROF_REQUEST, &result->transmitted, sizeof(result->transmitted));
+  esp_ping_get_profile(hdl, ESP_PING_PROF_REPLY, &result->received, sizeof(result->received));
+  esp_ping_get_profile(hdl, ESP_PING_PROF_DURATION, &result->totalMs, sizeof(result->totalMs));
+  if (result->done) xSemaphoreGive(result->done);
+}
+
+String pingGatewayForWiFiDiagnostics(IPAddress gateway) {
+  if (WiFi.status() != WL_CONNECTED) return "跳过（WiFi未连接）";
+  if (gateway == IPAddress(0, 0, 0, 0)) return "跳过（网关地址无效）";
+
+  WiFiGatewayPingResult result = {};
+  result.done = xSemaphoreCreateBinary();
+  if (!result.done) return "失败（无法创建信号量）";
+
+  ip_addr_t targetAddr;
+  targetAddr.type = IPADDR_TYPE_V4;
+  targetAddr.u_addr.ip4.addr = (uint32_t)gateway;
+
+  esp_ping_config_t pingConfig = ESP_PING_DEFAULT_CONFIG();
+  pingConfig.target_addr = targetAddr;
+  pingConfig.count = 1;
+  pingConfig.timeout_ms = 1000;
+  pingConfig.interval_ms = 100;
+
+  esp_ping_callbacks_t callbacks = {};
+  callbacks.cb_args = &result;
+  callbacks.on_ping_success = wifiGatewayPingOnSuccess;
+  callbacks.on_ping_end = wifiGatewayPingOnEnd;
+
+  esp_ping_handle_t pingHandle = NULL;
+  if (esp_ping_new_session(&pingConfig, &callbacks, &pingHandle) != ESP_OK) {
+    vSemaphoreDelete(result.done);
+    return "失败（无法创建ping会话）";
+  }
+
+  esp_ping_start(pingHandle);
+  bool completed = xSemaphoreTake(result.done, pdMS_TO_TICKS(1500)) == pdTRUE;
+  esp_ping_delete_session(pingHandle);
+  vSemaphoreDelete(result.done);
+
+  if (!completed || !result.finished) return "失败（ping超时）";
+  if (!result.success || result.received == 0) {
+    return "失败（" + String(result.transmitted) + "发/" + String(result.received) + "收，耗时" + String(result.totalMs) + "ms）";
+  }
+  return "成功（" + String(result.elapsedMs) + "ms，TTL=" + String(result.ttl) + "，" + String(result.transmitted) + "发/" + String(result.received) + "收）";
+}
+
+void printWiFiDiagnostics(const String& source) {
+  if (!showWiFiDiagnostics) return;
+
+  wl_status_t status = WiFi.status();
+  Serial.println("=== WiFi诊断：" + source + " ===");
+  Serial.println("运行时间(ms): " + String(millis()));
+  Serial.println("状态: " + wifiStatusText(status) + " (" + String((int)status) + ")");
+  Serial.println("SSID: " + WiFi.SSID());
+  Serial.println("IP: " + WiFi.localIP().toString());
+  Serial.println("网关: " + WiFi.gatewayIP().toString());
+  Serial.println("RSSI: " + String(WiFi.RSSI()) + " dBm");
+  Serial.println("信道: " + String(WiFi.channel()));
+  if (pingGatewayInWiFiDiagnostics) {
+    Serial.println("网关Ping: " + pingGatewayForWiFiDiagnostics(WiFi.gatewayIP()));
+  }
+  Serial.println("====================");
 }
 
 // HTML配置页面
@@ -635,6 +768,21 @@ const char* htmlToolsPage = R"rawliteral(
     </div>
 
     <div class="section">
+      <div class="section-title">推送测试与调试</div>
+      <div class="btn-group">
+        <button type="button" class="btn-info" id="pushDebugToggleBtn" onclick="togglePushDebug()">开启推送调试</button>
+        <button type="button" class="btn-query" id="testPushBtn" onclick="testPush()">测试推送</button>
+      </div>
+      <div class="btn-group">
+        <button type="button" class="btn-info" onclick="refreshPushDebug()">刷新日志</button>
+        <button type="button" class="btn-info" onclick="clearPushDebug()">清空日志</button>
+      </div>
+      <div class="hint">开启后会在串口和本页面记录推送请求、请求体、响应码和响应内容；关闭后不记录，避免污染其他调试。</div>
+      <div class="result-box" id="testPushResult"></div>
+      <div id="pushDebugLog" style="background:#222;color:#d6ffd6;font-family:'Courier New',monospace;min-height:120px;max-height:320px;overflow-y:auto;padding:10px;border-radius:5px;margin-top:10px;font-size:12px;white-space:pre-wrap;word-break:break-all;">暂无推送调试日志</div>
+    </div>
+
+    <div class="section">
       <div class="section-title">短信列表</div>
       <button type="button" class="btn-info" id="smsListBtn" onclick="loadSmsList()">查看所有短信</button>
       <div class="hint">从 SIM 短信存储读取，显示已读/未读、收信时间、发信人和内容。</div>
@@ -696,6 +844,57 @@ const char* htmlToolsPage = R"rawliteral(
         .catch(error => {
           result.className = 'result-box result-error';
           result.textContent = '❌ 请求失败: ' + error;
+        });
+    }
+
+    function setPushDebugLog(data) {
+      var log = document.getElementById('pushDebugLog');
+      var toggleBtn = document.getElementById('pushDebugToggleBtn');
+      log.textContent = data.message || '暂无推送调试日志';
+      log.scrollTop = log.scrollHeight;
+      toggleBtn.textContent = data.enabled ? '关闭推送调试' : '开启推送调试';
+      toggleBtn.style.background = data.enabled ? '#E91E63' : '#607D8B';
+    }
+
+    function refreshPushDebug() {
+      fetch('/pushdebug?action=query')
+        .then(response => response.json())
+        .then(data => setPushDebugLog(data));
+    }
+
+    function togglePushDebug() {
+      fetch('/pushdebug?action=toggle')
+        .then(response => response.json())
+        .then(data => setPushDebugLog(data));
+    }
+
+    function clearPushDebug() {
+      fetch('/pushdebug?action=clear')
+        .then(response => response.json())
+        .then(data => setPushDebugLog(data));
+    }
+
+    function testPush() {
+      var btn = document.getElementById('testPushBtn');
+      var result = document.getElementById('testPushResult');
+      btn.disabled = true;
+      result.className = 'result-box result-loading';
+      result.style.display = 'block';
+      result.textContent = '正在发送测试推送...';
+
+      fetch('/testpush', { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+          result.className = data.success ? 'result-box result-success' : 'result-box result-error';
+          result.textContent = data.message;
+          refreshPushDebug();
+        })
+        .catch(error => {
+          result.className = 'result-box result-error';
+          result.textContent = '请求失败: ' + error;
+        })
+        .finally(() => {
+          btn.disabled = false;
         });
     }
 
@@ -880,6 +1079,7 @@ const char* htmlToolsPage = R"rawliteral(
         sendAT();
       }
     });
+    refreshPushDebug();
   </script>
 </body>
 </html>
@@ -2314,26 +2514,111 @@ int64_t getUtcMillis() {
 String jsonEscape(const String& str) {
   String result = "";
   for (unsigned int i = 0; i < str.length(); i++) {
-    char c = str.charAt(i);
+    unsigned char c = (unsigned char)str.charAt(i);
     if (c == '"') result += "\\\"";
     else if (c == '\\') result += "\\\\";
     else if (c == '\n') result += "\\n";
     else if (c == '\r') result += "\\r";
     else if (c == '\t') result += "\\t";
-    else result += c;
+    else if (c < 0x20) {
+      const char hex[] = "0123456789ABCDEF";
+      result += "\\u00";
+      result += hex[(c >> 4) & 0x0F];
+      result += hex[c & 0x0F];
+    } else {
+      result += (char)c;
+    }
   }
   return result;
 }
 
 // 发送单个推送通道
+void appendPushDebugLog(const String& line) {
+  if (!pushDebugEnabled) return;
+
+  String entry = "[" + String(millis()) + "ms] " + line;
+  Serial.println("[PushDebug] " + line);
+  pushDebugLog += entry + "\n";
+
+  if (pushDebugLog.length() > PUSH_DEBUG_LOG_MAX) {
+    int trimPos = pushDebugLog.indexOf('\n', pushDebugLog.length() - PUSH_DEBUG_LOG_MAX);
+    if (trimPos >= 0) {
+      pushDebugLog = pushDebugLog.substring(trimPos + 1);
+    } else {
+      pushDebugLog = pushDebugLog.substring(pushDebugLog.length() - PUSH_DEBUG_LOG_MAX);
+    }
+  }
+}
+
+void handlePushDebug() {
+  if (!checkAuth()) return;
+
+  String action = server.arg("action");
+  if (action == "toggle") {
+    pushDebugEnabled = !pushDebugEnabled;
+    appendPushDebugLog(String("推送调试已") + (pushDebugEnabled ? "开启" : "关闭"));
+  } else if (action == "clear") {
+    pushDebugLog = "";
+  }
+
+  String json = "{";
+  json += "\"success\":true,";
+  json += "\"enabled\":" + String(pushDebugEnabled ? "true" : "false") + ",";
+  json += "\"message\":\"" + jsonEscape(pushDebugLog.length() ? pushDebugLog : "暂无推送调试日志") + "\"";
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleTestPush() {
+  if (!checkAuth()) return;
+
+  appendPushDebugLog("手动触发测试推送");
+  String timestamp = formatSmsTimestamp("26010112000032");
+  sendSMSToServer("TEST_PUSH", "这是一条推送通道测试消息", timestamp.c_str());
+
+  String json = "{";
+  json += "\"success\":true,";
+  json += "\"message\":\"测试推送已执行。";
+  if (!pushDebugEnabled) {
+    json += "推送调试日志当前关闭，如需查看请求和响应请先开启调试开关。";
+  } else {
+    json += "请查看下方推送调试日志。";
+  }
+  json += "\"";
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void logPushRequest(const String& channelName, const String& method, const String& url, const String& body) {
+  if (!pushDebugEnabled) return;
+  appendPushDebugLog("[" + channelName + "] REQUEST " + method + " " + url);
+  if (body.length() > 0) {
+    appendPushDebugLog("[" + channelName + "] REQUEST BODY: " + body);
+  }
+}
+
+void logPushResponse(const String& channelName, int httpCode, const String& response) {
+  if (!pushDebugEnabled) return;
+  appendPushDebugLog("[" + channelName + "] RESPONSE CODE: " + String(httpCode));
+  if (response.length() > 0) {
+    appendPushDebugLog("[" + channelName + "] RESPONSE BODY: " + response);
+  }
+}
+
 void sendToChannel(const PushChannel& channel, const char* sender, const char* message, const char* timestamp) {
-  if (!channel.enabled) return;
+  if (!channel.enabled) {
+    appendPushDebugLog("跳过未启用的推送通道");
+    return;
+  }
   
   // 对于某些推送方式，URL可以为空（使用默认URL）
   bool needUrl = (channel.type == PUSH_TYPE_POST_JSON || channel.type == PUSH_TYPE_BARK || 
                   channel.type == PUSH_TYPE_GET || channel.type == PUSH_TYPE_DINGTALK || 
                   channel.type == PUSH_TYPE_CUSTOM);
-  if (needUrl && channel.url.length() == 0) return;
+  if (needUrl && channel.url.length() == 0) {
+    appendPushDebugLog("跳过推送通道：缺少URL，类型=" + String(channel.type));
+    return;
+  }
   
   HTTPClient http;
   String channelName = channel.name.length() > 0 ? channel.name : ("通道" + String(channel.type));
@@ -2355,6 +2640,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       jsonData += "\"timestamp\":\"" + timestampEscaped + "\"";
       jsonData += "}";
       Serial.println("POST JSON: " + jsonData);
+      logPushRequest(channelName, "POST", channel.url, jsonData);
       httpCode = http.POST(jsonData);
       break;
     }
@@ -2368,6 +2654,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       jsonData += "\"body\":\"" + messageEscaped + "\"";
       jsonData += "}";
       Serial.println("BARK JSON: " + jsonData);
+      logPushRequest(channelName, "POST", channel.url, jsonData);
       httpCode = http.POST(jsonData);
       break;
     }
@@ -2385,6 +2672,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       getUrl += "&timestamp=" + urlEncode(String(timestamp));
       Serial.println("GET URL: " + getUrl);
       http.begin(getUrl);
+      logPushRequest(channelName, "GET", getUrl, "");
       httpCode = http.GET();
       break;
     }
@@ -2415,6 +2703,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       jsonData += "📱短信通知\\n发送者: " + senderEscaped + "\\n内容: " + messageEscaped + "\\n时间: " + timestampEscaped;
       jsonData += "\"}}";
       Serial.println("钉钉: " + jsonData);
+      logPushRequest(channelName, "POST", webhookUrl, jsonData);
       httpCode = http.POST(jsonData);
       break;
     }
@@ -2441,6 +2730,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       jsonData += "\"channel\":\"" + channelValue + "\"";
       jsonData += "}";
       Serial.println("PushPlus: " + jsonData);
+      logPushRequest(channelName, "POST", pushUrl, jsonData);
       httpCode = http.POST(jsonData);
       break;
     }
@@ -2453,6 +2743,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       String postData = "title=" + urlEncode("短信来自: " + String(sender));
       postData += "&desp=" + urlEncode("**发送者:** " + String(sender) + "\n\n**时间:** " + String(timestamp) + "\n\n**内容:**\n\n" + String(message));
       Serial.println("Server酱: " + postData);
+      logPushRequest(channelName, "POST", scUrl, postData);
       httpCode = http.POST(postData);
       break;
     }
@@ -2461,6 +2752,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       // 自定义模板
       if (channel.customBody.length() == 0) {
         Serial.println("自定义模板为空，跳过");
+        appendPushDebugLog("[" + channelName + "] 跳过：自定义模板为空");
         return;
       }
       http.begin(channel.url);
@@ -2470,6 +2762,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       body.replace("{message}", messageEscaped);
       body.replace("{timestamp}", timestampEscaped);
       Serial.println("自定义: " + body);
+      logPushRequest(channelName, "POST", channel.url, body);
       httpCode = http.POST(body);
       break;
     }
@@ -2508,6 +2801,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       http.begin(webhookUrl);
       http.addHeader("Content-Type", "application/json");
       Serial.println("飞书: " + jsonData);
+      logPushRequest(channelName, "POST", webhookUrl, jsonData);
       httpCode = http.POST(jsonData);
       break;
     }
@@ -2527,6 +2821,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       jsonData += "\"priority\":5";
       jsonData += "}";
       Serial.println("Gotify: " + jsonData);
+      logPushRequest(channelName, "POST", gotifyUrl, jsonData);
       httpCode = http.POST(jsonData);
       break;
     }
@@ -2548,6 +2843,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       jsonData += "}";
       
       Serial.println("Telegram: " + jsonData);
+      logPushRequest(channelName, "POST", tgUrl, jsonData);
       httpCode = http.POST(jsonData);
       break;
     }
@@ -2559,20 +2855,26 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
   
   if (httpCode > 0) {
     Serial.printf("[%s] 响应码: %d\n", channelName.c_str(), httpCode);
+    String response = http.getString();
+    logPushResponse(channelName, httpCode, response);
     if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_CREATED) {
-      String response = http.getString();
       Serial.println("响应: " + response);
     }
   } else {
-    Serial.printf("[%s] HTTP请求失败: %s\n", channelName.c_str(), http.errorToString(httpCode).c_str());
+    String err = http.errorToString(httpCode);
+    logPushResponse(channelName, httpCode, err);
+    Serial.printf("[%s] HTTP请求失败: %s\n", channelName.c_str(), err.c_str());
   }
   http.end();
 }
 
 // 发送短信到所有启用的推送通道
 void sendSMSToServer(const char* sender, const char* message, const char* timestamp) {
+  printWiFiDiagnostics("准备HTTP推送");
+  appendPushDebugLog("准备推送短信，发送者=" + String(sender) + "，时间=" + String(timestamp));
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi未连接，跳过推送");
+    appendPushDebugLog("推送取消：WiFi未连接，状态=" + wifiStatusText(WiFi.status()));
     return;
   }
   
@@ -2586,16 +2888,19 @@ void sendSMSToServer(const char* sender, const char* message, const char* timest
   
   if (!hasEnabledChannel) {
     Serial.println("没有启用的推送通道");
+    appendPushDebugLog("推送取消：没有启用且配置完整的推送通道");
     return;
   }
   
   Serial.println("\n=== 开始多通道推送 ===");
+  appendPushDebugLog("开始多通道推送");
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
     if (isPushChannelValid(config.pushChannels[i])) {
       sendToChannel(config.pushChannels[i], sender, message, timestamp);
       delay(100); // 短暂延迟避免请求过快
     }
   }
+  appendPushDebugLog("多通道推送完成");
   Serial.println("=== 多通道推送完成 ===\n");
 }
 
@@ -2635,11 +2940,13 @@ bool isHexString(const String& str) {
 
 // 处理最终的短信内容（管理员命令检查和转发）
 void processSmsContent(const char* sender, const char* text, const char* timestamp) {
+  String formattedTimestamp = formatSmsTimestamp(String(timestamp));
   Serial.println("=== 处理短信内容 ===");
   Serial.println("发送者: " + String(sender));
-  Serial.println("时间戳: " + String(timestamp));
+  Serial.println("时间戳: " + formattedTimestamp);
   Serial.println("内容: " + String(text));
   Serial.println("====================");
+  printWiFiDiagnostics("短信到达");
 
   // 检查是否在号码黑名单中
   if (isInNumberBlackList(sender)) {
@@ -2662,11 +2969,79 @@ void processSmsContent(const char* sender, const char* text, const char* timesta
   }
 
   // 发送通知http（推送到所有启用的通道）
-  sendSMSToServer(sender, text, timestamp);
+  sendSMSToServer(sender, text, formattedTimestamp.c_str());
   // 发送通知邮件
   String subject = ""; subject+="短信";subject+=sender;subject+=",";subject+=text;
-  String body = ""; body+="来自：";body+=sender;body+="，时间：";body+=timestamp;body+="，内容：";body+=text;
+  String body = ""; body+="来自：";body+=sender;body+="，时间：";body+=formattedTimestamp;body+="，内容：";body+=text;
   sendEmailNotification(subject.c_str(), body.c_str());
+}
+
+bool submitIncomingPdu(const String& pduLine, const String& source, int storageIndex) {
+  Serial.println("收到PDU数据来源: " + source + (storageIndex >= 0 ? ("，存储索引: " + String(storageIndex)) : ""));
+  Serial.println("收到PDU数据: " + pduLine);
+  Serial.println("PDU长度: " + String(pduLine.length()) + " 字符");
+
+  if (!isHexString(pduLine)) {
+    Serial.println("PDU数据不是有效的十六进制字符串");
+    return false;
+  }
+
+  if (!pdu.decodePDU(pduLine.c_str())) {
+    Serial.println("PDU解析失败！");
+    return false;
+  }
+
+  Serial.println("PDU解析成功");
+  Serial.println("=== 短信内容 ===");
+  Serial.println("发送者: " + String(pdu.getSender()));
+  Serial.println("时间戳: " + String(pdu.getTimeStamp()));
+  Serial.println("内容: " + String(pdu.getText()));
+
+  int* concatInfo = pdu.getConcatInfo();
+  int refNumber = concatInfo[0];
+  int partNumber = concatInfo[1];
+  int totalParts = concatInfo[2];
+
+  Serial.printf("长短信信息: 参考号=%d, 当前=%d, 总计=%d\n", refNumber, partNumber, totalParts);
+  Serial.println("===============");
+
+  if (totalParts > 1 && partNumber > 0) {
+    Serial.printf("收到长短信分段 %d/%d\n", partNumber, totalParts);
+
+    int slot = findOrCreateConcatSlot(refNumber, pdu.getSender(), totalParts);
+    int partIndex = partNumber - 1;
+    if (partIndex >= 0 && partIndex < MAX_CONCAT_PARTS) {
+      if (!concatBuffer[slot].parts[partIndex].valid) {
+        concatBuffer[slot].parts[partIndex].valid = true;
+        concatBuffer[slot].parts[partIndex].text = String(pdu.getText());
+        concatBuffer[slot].receivedParts++;
+
+        if (concatBuffer[slot].receivedParts == 1) {
+          concatBuffer[slot].timestamp = String(pdu.getTimeStamp());
+        }
+
+        Serial.printf("  已缓存分段 %d，当前已收到 %d/%d\n",
+                     partNumber,
+                     concatBuffer[slot].receivedParts,
+                     totalParts);
+      } else {
+        Serial.printf("  分段 %d 已存在，跳过\n", partNumber);
+      }
+    }
+
+    if (concatBuffer[slot].receivedParts >= totalParts) {
+      Serial.println("长短信已收齐，开始合并转发");
+      String fullText = assembleConcatSms(slot);
+      processSmsContent(concatBuffer[slot].sender.c_str(),
+                       fullText.c_str(),
+                       concatBuffer[slot].timestamp.c_str());
+      clearConcatSlot(slot);
+    }
+  } else {
+    processSmsContent(pdu.getSender(), pdu.getText(), pdu.getTimeStamp());
+  }
+
+  return true;
 }
 
 bool readStoredSmsByIndex(int smsIndex) {
@@ -2687,15 +3062,13 @@ bool readStoredSmsByIndex(int smsIndex) {
     }
   }
 
-  String sender, text, timestamp;
-  if (pduLine.length() == 0 || !decodeStoredSmsPdu(pduLine, sender, text, timestamp)) {
+  if (pduLine.length() == 0) {
     Serial.println("读取存储短信失败，索引: " + String(smsIndex));
     return false;
   }
 
   Serial.println("读取存储短信成功，索引: " + String(smsIndex));
-  processSmsContent(sender.c_str(), text.c_str(), timestamp.c_str());
-  return true;
+  return submitIncomingPdu(pduLine, "CMTI", smsIndex);
 }
 
 // 处理URC和PDU
@@ -2732,80 +3105,7 @@ void checkSerial1URC() {
     
     // 如果是十六进制字符串，认为是PDU数据
     if (isHexString(line)) {
-      Serial.println("收到PDU数据: " + line);
-      Serial.println("PDU长度: " + String(line.length()) + " 字符");
-      
-      // 解析PDU
-      if (!pdu.decodePDU(line.c_str())) {
-        Serial.println("❌ PDU解析失败！");
-      } else {
-        Serial.println("✓ PDU解析成功");
-        Serial.println("=== 短信内容 ===");
-        Serial.println("发送者: " + String(pdu.getSender()));
-        Serial.println("时间戳: " + String(pdu.getTimeStamp()));
-        Serial.println("内容: " + String(pdu.getText()));
-        
-        // 获取长短信信息
-        int* concatInfo = pdu.getConcatInfo();
-        int refNumber = concatInfo[0];
-        int partNumber = concatInfo[1];
-        int totalParts = concatInfo[2];
-        
-        Serial.printf("长短信信息: 参考号=%d, 当前=%d, 总计=%d\n", refNumber, partNumber, totalParts);
-        Serial.println("===============");
-
-        // 判断是否为长短信
-        if (totalParts > 1 && partNumber > 0) {
-          // 这是长短信的一部分
-          Serial.printf("📧 收到长短信分段 %d/%d\n", partNumber, totalParts);
-          
-          // 查找或创建缓存槽位
-          int slot = findOrCreateConcatSlot(refNumber, pdu.getSender(), totalParts);
-          
-          // 存储该分段（partNumber从1开始，数组从0开始）
-          int partIndex = partNumber - 1;
-          if (partIndex >= 0 && partIndex < MAX_CONCAT_PARTS) {
-            if (!concatBuffer[slot].parts[partIndex].valid) {
-              concatBuffer[slot].parts[partIndex].valid = true;
-              concatBuffer[slot].parts[partIndex].text = String(pdu.getText());
-              concatBuffer[slot].receivedParts++;
-              
-              // 如果是第一个收到的分段，保存时间戳
-              if (concatBuffer[slot].receivedParts == 1) {
-                concatBuffer[slot].timestamp = String(pdu.getTimeStamp());
-              }
-              
-              Serial.printf("  已缓存分段 %d，当前已收到 %d/%d\n", 
-                           partNumber, 
-                           concatBuffer[slot].receivedParts, 
-                           totalParts);
-            } else {
-              Serial.printf("  ⚠️ 分段 %d 已存在，跳过\n", partNumber);
-            }
-          }
-          
-          // 检查是否已收齐所有分段
-          if (concatBuffer[slot].receivedParts >= totalParts) {
-            Serial.println("✅ 长短信已收齐，开始合并转发");
-            
-            // 合并所有分段
-            String fullText = assembleConcatSms(slot);
-            
-            // 处理完整短信
-            processSmsContent(concatBuffer[slot].sender.c_str(), 
-                             fullText.c_str(), 
-                             concatBuffer[slot].timestamp.c_str());
-            
-            // 清空槽位
-            clearConcatSlot(slot);
-          }
-        } else {
-          // 普通短信，直接处理
-          processSmsContent(pdu.getSender(), pdu.getText(), pdu.getTimeStamp());
-        }
-      }
-      
-      // 返回IDLE状态
+      submitIncomingPdu(line, "CMT", -1);
       state = IDLE;
     } 
     // 如果是其他内容（OK、ERROR等），也返回IDLE
@@ -2966,6 +3266,8 @@ void setup() {
   server.on("/sms", handleToolsPage);  // 兼容旧链接
   server.on("/sendsms", HTTP_POST, handleSendSms);
   server.on("/smslist", handleSmsList);
+  server.on("/pushdebug", handlePushDebug);
+  server.on("/testpush", HTTP_POST, handleTestPush);
   server.on("/ping", HTTP_POST, handlePing);
   server.on("/query", handleQuery);
   server.on("/flight", handleFlightMode);
