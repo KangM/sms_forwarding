@@ -16,13 +16,13 @@
 #include "wifi_config.h"
 
 //串口映射
-#define TXD 3
-#define RXD 4
+#define TXD 43
+#define RXD 44
 #define MODEM_EN_PIN 5
 
 // LED引脚定义（用于通过CI验证，给个假的）
 #ifndef LED_BUILTIN
-#define LED_BUILTIN 8
+#define LED_BUILTIN 48
 #endif
 
 // 推送通道类型
@@ -82,7 +82,7 @@ WebServer server(80);
 
 bool configValid = false;  // 配置是否有效
 bool timeSynced = false;   // NTP时间是否已同步
-unsigned long lastPrintTime = 0;  // 上次打印IP的时间
+String configInvalidReason = "";
 
 #define SERIAL_BUFFER_SIZE 500
 #define MAX_PDU_LENGTH 300
@@ -192,8 +192,9 @@ bool isPushChannelValid(const PushChannel& ch) {
     case PUSH_TYPE_GET:
     case PUSH_TYPE_DINGTALK:
     case PUSH_TYPE_FEISHU:
-    case PUSH_TYPE_CUSTOM:
       return ch.url.length() > 0;
+    case PUSH_TYPE_CUSTOM:
+      return ch.url.length() > 0 && ch.customBody.length() > 0;
     case PUSH_TYPE_PUSHPLUS:
     case PUSH_TYPE_SERVERCHAN:
       return ch.key1.length() > 0;  // 这两个主要靠key1（token/sendkey）
@@ -206,8 +207,79 @@ bool isPushChannelValid(const PushChannel& ch) {
   }
 }
 
-// 检查配置是否有效（至少配置了邮件或任一推送通道）
-bool isConfigValid() {
+String pushTypeName(PushType type) {
+  switch (type) {
+    case PUSH_TYPE_POST_JSON: return "POST JSON";
+    case PUSH_TYPE_BARK: return "Bark";
+    case PUSH_TYPE_GET: return "GET请求";
+    case PUSH_TYPE_DINGTALK: return "钉钉机器人";
+    case PUSH_TYPE_PUSHPLUS: return "PushPlus";
+    case PUSH_TYPE_SERVERCHAN: return "Server酱";
+    case PUSH_TYPE_CUSTOM: return "自定义模板";
+    case PUSH_TYPE_FEISHU: return "飞书机器人";
+    case PUSH_TYPE_GOTIFY: return "Gotify";
+    case PUSH_TYPE_TELEGRAM: return "Telegram Bot";
+    default: return "未知类型";
+  }
+}
+
+void appendMissingField(String& reason, const String& field) {
+  if (reason.length() > 0) reason += "、";
+  reason += field;
+}
+
+String getEmailInvalidReason() {
+  String missing = "";
+  if (config.smtpServer.length() == 0) appendMissingField(missing, "SMTP服务器");
+  if (config.smtpUser.length() == 0) appendMissingField(missing, "邮箱账号");
+  if (config.smtpPass.length() == 0) appendMissingField(missing, "邮箱密码/授权码");
+  if (config.smtpSendTo.length() == 0) appendMissingField(missing, "收件邮箱");
+  if (missing.length() == 0) return "";
+  return "邮箱通知不完整，缺少：" + missing;
+}
+
+String getPushChannelInvalidReason(const PushChannel& ch) {
+  if (!ch.enabled) return "";
+
+  String missing = "";
+  switch (ch.type) {
+    case PUSH_TYPE_POST_JSON:
+    case PUSH_TYPE_BARK:
+    case PUSH_TYPE_GET:
+    case PUSH_TYPE_DINGTALK:
+    case PUSH_TYPE_FEISHU:
+      if (ch.url.length() == 0) appendMissingField(missing, "URL/Webhook");
+      break;
+    case PUSH_TYPE_CUSTOM:
+      if (ch.url.length() == 0) appendMissingField(missing, "URL/Webhook");
+      if (ch.customBody.length() == 0) appendMissingField(missing, "请求体模板");
+      break;
+    case PUSH_TYPE_PUSHPLUS:
+      if (ch.key1.length() == 0) appendMissingField(missing, "Token");
+      break;
+    case PUSH_TYPE_SERVERCHAN:
+      if (ch.key1.length() == 0) appendMissingField(missing, "SendKey");
+      break;
+    case PUSH_TYPE_GOTIFY:
+      if (ch.url.length() == 0) appendMissingField(missing, "服务器URL");
+      if (ch.key1.length() == 0) appendMissingField(missing, "Token");
+      break;
+    case PUSH_TYPE_TELEGRAM:
+      if (ch.key1.length() == 0) appendMissingField(missing, "Chat ID");
+      if (ch.key2.length() == 0) appendMissingField(missing, "Bot Token");
+      break;
+    default:
+      appendMissingField(missing, "有效推送类型");
+      break;
+  }
+
+  if (missing.length() == 0) return "";
+  String name = ch.name.length() > 0 ? ch.name : "未命名通道";
+  return name + "（" + pushTypeName(ch.type) + "）缺少：" + missing;
+}
+
+bool validateConfig(String& reason) {
+  reason = "";
   bool emailValid = config.smtpServer.length() > 0 && 
                     config.smtpUser.length() > 0 && 
                     config.smtpPass.length() > 0 && 
@@ -221,7 +293,46 @@ bool isConfigValid() {
     }
   }
   
-  return emailValid || pushValid;
+  if (emailValid || pushValid) return true;
+
+  reason = "没有可用的通知通道。至少需要完整邮箱配置，或启用并填写一个有效推送通道。";
+  String emailReason = getEmailInvalidReason();
+  if (emailReason.length() > 0) {
+    reason += "\n- " + emailReason;
+  }
+
+  bool hasEnabledPush = false;
+  for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
+    if (config.pushChannels[i].enabled) {
+      hasEnabledPush = true;
+      String channelReason = getPushChannelInvalidReason(config.pushChannels[i]);
+      if (channelReason.length() > 0) {
+        reason += "\n- 推送通道" + String(i + 1) + "：" + channelReason;
+      }
+    }
+  }
+  if (!hasEnabledPush) {
+    reason += "\n- 没有启用任何推送通道";
+  }
+  return false;
+}
+
+bool isConfigValid() {
+  String reason;
+  return validateConfig(reason);
+}
+
+void printConfigValidationResult(const String& source) {
+  configValid = validateConfig(configInvalidReason);
+  Serial.println("=== 配置检查（" + source + "）===");
+  if (configValid) {
+    Serial.println("配置有效：已配置至少一个可用通知通道");
+  } else {
+    Serial.println("配置无效：");
+    Serial.println(configInvalidReason);
+    Serial.println("请访问 " + getDeviceUrl() + " 配置系统参数");
+  }
+  Serial.println("====================");
 }
 
 // 获取当前设备URL
@@ -468,6 +579,12 @@ const char* htmlToolsPage = R"rawliteral(
     .info-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
     .info-table td { padding: 5px 8px; border-bottom: 1px solid #ddd; }
     .info-table td:first-child { font-weight: bold; width: 40%; color: #555; }
+    .sms-card { background: #fff; border: 1px solid #ddd; border-left: 4px solid #2196F3; border-radius: 5px; padding: 10px; margin-top: 10px; color: #333; }
+    .sms-meta { font-size: 12px; color: #555; margin-bottom: 6px; line-height: 1.6; }
+    .sms-badge { display: inline-block; padding: 2px 6px; border-radius: 3px; color: white; font-size: 12px; margin-right: 5px; }
+    .sms-read { background: #607D8B; }
+    .sms-unread { background: #E91E63; }
+    .sms-body { white-space: pre-wrap; word-break: break-word; color: #222; }
     .btn-group { display: flex; gap: 10px; flex-wrap: wrap; }
     .btn-group button { flex: 1; min-width: 120px; }
     #atLog { background: #333; color: #00ff00; font-family: 'Courier New', Courier, monospace; min-height: 150px; max-height: 300px; overflow-y: auto; padding: 10px; border-radius: 5px; margin-bottom: 10px; font-size: 13px; white-space: pre-wrap; word-break: break-all; }
@@ -515,6 +632,13 @@ const char* htmlToolsPage = R"rawliteral(
         <button type="button" class="btn-info" onclick="queryInfo('wifi')" style="background:#00BCD4;">📡 WiFi状态</button>
       </div>
       <div class="result-box" id="queryResult"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">短信列表</div>
+      <button type="button" class="btn-info" id="smsListBtn" onclick="loadSmsList()">查看所有短信</button>
+      <div class="hint">从 SIM 短信存储读取，显示已读/未读、收信时间、发信人和内容。</div>
+      <div class="result-box" id="smsListResult"></div>
     </div>
     
     <div class="section">
@@ -572,6 +696,36 @@ const char* htmlToolsPage = R"rawliteral(
         .catch(error => {
           result.className = 'result-box result-error';
           result.textContent = '❌ 请求失败: ' + error;
+        });
+    }
+
+    function loadSmsList() {
+      var btn = document.getElementById('smsListBtn');
+      var result = document.getElementById('smsListResult');
+      btn.disabled = true;
+      btn.textContent = '正在读取...';
+      result.className = 'result-box result-loading';
+      result.style.display = 'block';
+      result.textContent = '正在读取短信列表，请稍候...';
+
+      fetch('/smslist')
+        .then(response => response.json())
+        .then(data => {
+          if (data.success) {
+            result.className = 'result-box result-info';
+            result.innerHTML = data.message;
+          } else {
+            result.className = 'result-box result-error';
+            result.innerHTML = '读取失败<br>' + data.message;
+          }
+        })
+        .catch(error => {
+          result.className = 'result-box result-error';
+          result.textContent = '请求失败: ' + error;
+        })
+        .finally(() => {
+          btn.disabled = false;
+          btn.textContent = '查看所有短信';
         });
     }
 
@@ -858,6 +1012,149 @@ String sendATCommand(const char* cmd, unsigned long timeout) {
 }
 
 // 处理飞行模式控制请求
+String htmlEscape(const String& str) {
+  String result = "";
+  for (unsigned int i = 0; i < str.length(); i++) {
+    char c = str.charAt(i);
+    if (c == '&') result += "&amp;";
+    else if (c == '<') result += "&lt;";
+    else if (c == '>') result += "&gt;";
+    else if (c == '"') result += "&quot;";
+    else if (c == '\'') result += "&#39;";
+    else result += c;
+  }
+  return result;
+}
+
+String getCsvField(String value, int fieldIndex) {
+  value.trim();
+  int colon = value.indexOf(':');
+  if (colon >= 0) value = value.substring(colon + 1);
+
+  int start = 0;
+  bool inQuote = false;
+  int current = 0;
+  for (int i = 0; i <= value.length(); i++) {
+    char c = (i < value.length()) ? value.charAt(i) : ',';
+    if (c == '"') inQuote = !inQuote;
+    if ((c == ',' && !inQuote) || i == value.length()) {
+      if (current == fieldIndex) {
+        String field = value.substring(start, i);
+        field.trim();
+        if (field.startsWith("\"") && field.endsWith("\"") && field.length() >= 2) {
+          field = field.substring(1, field.length() - 1);
+        }
+        return field;
+      }
+      current++;
+      start = i + 1;
+    }
+  }
+  return "";
+}
+
+String smsStatusText(int status) {
+  if (status == 0) return "未读";
+  if (status == 1) return "已读";
+  if (status == 2) return "未发送";
+  if (status == 3) return "已发送";
+  return "未知";
+}
+
+String smsStatusClass(int status) {
+  return status == 0 ? "sms-unread" : "sms-read";
+}
+
+bool isLikelyPduLine(const String& line) {
+  if (line.length() < 10) return false;
+  for (unsigned int i = 0; i < line.length(); i++) {
+    char c = line.charAt(i);
+    if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool decodeStoredSmsPdu(const String& pduLine, String& sender, String& text, String& timestamp) {
+  if (!pdu.decodePDU(pduLine.c_str())) return false;
+  sender = String(pdu.getSender());
+  text = String(pdu.getText());
+  timestamp = String(pdu.getTimeStamp());
+  return true;
+}
+
+void appendSmsCard(String& html, int index, int status, const String& sender, const String& timestamp, const String& text) {
+  String displayTimestamp = timestamp.length() ? timestamp : String("-");
+  String displaySender = sender.length() ? sender : String("-");
+  String displayText = text.length() ? text : String("(空短信)");
+
+  html += "<div class='sms-card'>";
+  html += "<div class='sms-meta'>";
+  html += "<span class='sms-badge " + smsStatusClass(status) + "'>" + smsStatusText(status) + "</span>";
+  html += "索引: " + String(index);
+  html += " | 收信时间: " + htmlEscape(displayTimestamp);
+  html += " | 发信人: " + htmlEscape(displaySender);
+  html += "</div>";
+  html += "<div class='sms-body'>" + htmlEscape(displayText) + "</div>";
+  html += "</div>";
+}
+
+void handleSmsList() {
+  if (!checkAuth()) return;
+
+  Serial.println("网页端读取短信列表");
+  sendATCommand("AT+CPMS=\"SM\",\"SM\",\"SM\"", 5000);
+  sendATCommand("AT+CMGF=0", 2000);
+  String resp = sendATCommand("AT+CMGL=4", 15000);
+  Serial.println("CMGL响应: " + resp);
+
+  String html = "";
+  bool success = resp.indexOf("OK") >= 0;
+  int count = 0;
+  int currentIndex = -1;
+  int currentStatus = -1;
+
+  int lineStart = 0;
+  for (int i = 0; i <= resp.length(); i++) {
+    if (i == resp.length() || resp.charAt(i) == '\n') {
+      String line = resp.substring(lineStart, i);
+      line.trim();
+
+      if (line.startsWith("+CMGL:")) {
+        currentIndex = getCsvField(line, 0).toInt();
+        currentStatus = getCsvField(line, 1).toInt();
+      } else if (currentIndex >= 0 && isLikelyPduLine(line)) {
+        String sender, text, timestamp;
+        if (decodeStoredSmsPdu(line, sender, text, timestamp)) {
+          appendSmsCard(html, currentIndex, currentStatus, sender, timestamp, text);
+          count++;
+        } else {
+          html += "<div class='sms-card'><div class='sms-meta'>索引: " + String(currentIndex) + " | 解码失败</div>";
+          html += "<div class='sms-body'>" + htmlEscape(line) + "</div></div>";
+          count++;
+        }
+        currentIndex = -1;
+        currentStatus = -1;
+      }
+
+      lineStart = i + 1;
+    }
+  }
+
+  if (success && count == 0) {
+    html = "SIM 短信存储中没有短信。";
+  } else if (!success) {
+    html = "模块返回异常:<br><pre>" + htmlEscape(resp) + "</pre>";
+  }
+
+  String json = "{";
+  json += "\"success\":" + String(success ? "true" : "false") + ",";
+  json += "\"message\":\"" + jsonEscape(html) + "\"";
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
 void handleFlightMode() {
   if (!checkAuth()) return;
   
@@ -1561,7 +1858,7 @@ void handleSave() {
   }
   
   saveConfig();
-  configValid = isConfigValid();
+  printConfigValidationResult("保存配置");
   
   String html = R"rawliteral(
 <!DOCTYPE html>
@@ -2372,6 +2669,35 @@ void processSmsContent(const char* sender, const char* text, const char* timesta
   sendEmailNotification(subject.c_str(), body.c_str());
 }
 
+bool readStoredSmsByIndex(int smsIndex) {
+  String resp = sendATCommand(("AT+CMGR=" + String(smsIndex)).c_str(), 5000);
+  Serial.println("CMGR响应: " + resp);
+
+  String pduLine = "";
+  int lineStart = 0;
+  for (int i = 0; i <= resp.length(); i++) {
+    if (i == resp.length() || resp.charAt(i) == '\n') {
+      String line = resp.substring(lineStart, i);
+      line.trim();
+      if (isLikelyPduLine(line)) {
+        pduLine = line;
+        break;
+      }
+      lineStart = i + 1;
+    }
+  }
+
+  String sender, text, timestamp;
+  if (pduLine.length() == 0 || !decodeStoredSmsPdu(pduLine, sender, text, timestamp)) {
+    Serial.println("读取存储短信失败，索引: " + String(smsIndex));
+    return false;
+  }
+
+  Serial.println("读取存储短信成功，索引: " + String(smsIndex));
+  processSmsContent(sender.c_str(), text.c_str(), timestamp.c_str());
+  return true;
+}
+
 // 处理URC和PDU
 void checkSerial1URC() {
   static enum { IDLE,
@@ -2388,6 +2714,15 @@ void checkSerial1URC() {
     if (line.startsWith("+CMT:")) {
       Serial.println("检测到+CMT，等待PDU数据...");
       state = WAIT_PDU;
+    } else if (line.startsWith("+CMTI:")) {
+      int commaIdx = line.lastIndexOf(',');
+      if (commaIdx >= 0) {
+        int smsIndex = line.substring(commaIdx + 1).toInt();
+        Serial.println("检测到+CMTI，新短信索引: " + String(smsIndex));
+        readStoredSmsByIndex(smsIndex);
+      } else {
+        Serial.println("检测到+CMTI，但无法解析索引: " + line);
+      }
     }
   } else if (state == WAIT_PDU) {
     // 跳过空行
@@ -2549,9 +2884,8 @@ void setup() {
   
   // 加载配置
   loadConfig();
-  configValid = isConfigValid();
+  printConfigValidationResult("上电加载");
   
-
   // ========== 先初始化模组 ==========
   while (!sendATandWaitOK("AT", 1000)) {
     Serial.println("AT未响应，重试...");
@@ -2566,8 +2900,15 @@ void setup() {
   }
   Serial.println("已禁用数据连接(AT+CGACT=0,1)，防止流量消耗");
   
+  // 选择 SIM 短信存储，便于网页端列出已读/未读短信
+  while (!sendATandWaitOK("AT+CPMS=\"SM\",\"SM\",\"SM\"", 3000)) {
+    Serial.println("设置CPMS失败，重试...");
+    blink_short();
+  }
+  Serial.println("CPMS短信存储设置完成");
+  
   //设置短信自动上报
-  while (!sendATandWaitOK("AT+CNMI=2,2,0,0,0", 1000)) {
+  while (!sendATandWaitOK("AT+CNMI=2,1,0,0,0", 1000)) {
     Serial.println("设置CNMI失败，重试...");
     blink_short();
   }
@@ -2624,6 +2965,7 @@ void setup() {
   server.on("/tools", handleToolsPage);
   server.on("/sms", handleToolsPage);  // 兼容旧链接
   server.on("/sendsms", HTTP_POST, handleSendSms);
+  server.on("/smslist", handleSmsList);
   server.on("/ping", HTTP_POST, handlePing);
   server.on("/query", handleQuery);
   server.on("/flight", handleFlightMode);
@@ -2646,14 +2988,6 @@ void setup() {
 void loop() {
   // 处理HTTP请求
   server.handleClient();
-  
-  // 如果配置无效，每秒打印一次IP地址
-  if (!configValid) {
-    if (millis() - lastPrintTime >= 1000) {
-      lastPrintTime = millis();
-      Serial.println("⚠️ 请访问 " + getDeviceUrl() + " 配置系统参数");
-    }
-  }
   
   // 检查长短信超时
   checkConcatTimeout();
