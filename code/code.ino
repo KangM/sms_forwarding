@@ -3,6 +3,7 @@
 #include <WiFiMulti.h>
 #include <WiFiClientSecure.h>
 #include <WebServer.h>
+#include <DNSServer.h>
 #include <Preferences.h>
 #include <pdulib.h>
 #define ENABLE_SMTP
@@ -13,8 +14,6 @@
 #include <base64.h>      // Base64编码
 #include "ping/ping_sock.h"
 
-//wifi信息，需要你打开这个去改
-#include "wifi_config.h"
 #include "pins.h"
 #include "config_types.h"
 #include "sms_types.h"
@@ -26,6 +25,7 @@ PDU pdu = PDU(4096);
 WiFiClientSecure ssl_client;
 SMTPClient smtp(ssl_client);
 WebServer server(80);
+DNSServer dnsServer;
 
 bool configValid = false;  // 配置是否有效
 bool timeSynced = false;   // NTP时间是否已同步
@@ -63,6 +63,8 @@ ConcatSms concatBuffer[MAX_CONCAT_MESSAGES];  // 长短信缓存
 
 #include "setup_helpers.h"
 
+#include "wifi_provision.h"
+
 void setup() {
   //  指示灯
   pinMode(LED_BUILTIN, OUTPUT);
@@ -86,7 +88,6 @@ void setup() {
 
   // 加载配置
   loadConfig();
-  printConfigValidationResult("上电加载");
 
   // ========== 先初始化模组 ==========
   while (!sendATandWaitOK("AT", 1000)) {
@@ -131,40 +132,46 @@ void setup() {
   Serial.println("网络已注册");
   // ========== 模组初始化完成 ==========
 
-  // 扫描所有信道以连接信号最强的 AP，防止在 mesh 组网这类场景中连接到弱 AP
-  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
-  // 连接WiFi（支持隐藏SSID）
-  // 参数: ssid, password, channel(0=自动), bssid(nullptr=自动), connect(true=连接隐藏网络)
-  WiFi.begin(WIFI_SSID, WIFI_PASS, 0, nullptr, true);
-  Serial.println("连接wifi");
-  Serial.println(WIFI_SSID);
-  while (WiFi.status() != WL_CONNECTED) blink_short();
-  Serial.println("wifi已连接");
-  Serial.print("IP地址: ");
-  Serial.println(WiFi.localIP());
+  bool wifiConnected = connectWiFiOrStartConfigPortal();
+  printConfigValidationResult("上电加载");
 
   // NTP时间同步（获取UTC时间）
-  Serial.println("正在同步NTP时间...");
-  configTime(0, 0, "ntp.ntsc.ac.cn", "ntp.aliyun.com", "pool.ntp.org");
-  int ntpRetry = 0;
-  while (time(nullptr) < 100000 && ntpRetry < 100) {
-    delay(100);
-    ntpRetry++;
-  }
-  if (time(nullptr) >= 100000) {
-    timeSynced = true;
-    Serial.println("NTP时间同步成功");
-    time_t now = time(nullptr);
-    Serial.print("当前UTC时间戳: ");
-    Serial.println(now);
+  if (wifiConnected) {
+    Serial.println("正在同步NTP时间...");
+    configTime(0, 0, "ntp.ntsc.ac.cn", "ntp.aliyun.com", "pool.ntp.org");
+    int ntpRetry = 0;
+    while (time(nullptr) < 100000 && ntpRetry < 100) {
+      delay(100);
+      ntpRetry++;
+    }
+    if (time(nullptr) >= 100000) {
+      timeSynced = true;
+      Serial.println("NTP时间同步成功");
+      time_t now = time(nullptr);
+      Serial.print("当前UTC时间戳: ");
+      Serial.println(now);
+    } else {
+      Serial.println("NTP时间同步失败，将使用设备时间");
+    }
   } else {
-    Serial.println("NTP时间同步失败，将使用设备时间");
+    Serial.println("WiFi未连接，跳过NTP时间同步");
   }
 
   // 启动HTTP服务器
-  server.on("/", handleRoot);
+  server.on("/", handleRootOrWiFiConfig);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/tools", handleToolsPage);
+  server.on("/wifi", handleWiFiConfigPage);
+  server.on("/wifisave", HTTP_POST, handleWiFiConfigSave);
+  server.on("/wificlear", HTTP_POST, handleWiFiConfigClear);
+  server.on("/generate_204", handleCaptivePortalRedirect);
+  server.on("/gen_204", handleCaptivePortalRedirect);
+  server.on("/hotspot-detect.html", handleCaptivePortalRedirect);
+  server.on("/connecttest.txt", handleCaptivePortalRedirect);
+  server.on("/ncsi.txt", handleCaptivePortalRedirect);
+  server.on("/fwlink", handleCaptivePortalRedirect);
+  server.on("/success.txt", handleCaptivePortalRedirect);
+  server.on("/canonical.html", handleCaptivePortalRedirect);
   server.on("/sms", handleToolsPage);  // 兼容旧链接
   server.on("/sendsms", HTTP_POST, handleSendSms);
   server.on("/smslist", handleSmsList);
@@ -174,6 +181,7 @@ void setup() {
   server.on("/query", handleQuery);
   server.on("/flight", handleFlightMode);
   server.on("/at", handleATCommand);
+  server.onNotFound(handleCaptivePortalNotFound);
   server.begin();
   Serial.println("HTTP服务器已启动");
 
@@ -181,15 +189,20 @@ void setup() {
   digitalWrite(LED_BUILTIN, LOW);
 
   // 如果配置有效，发送启动邮件通知
-  if (configValid) {
+  if (wifiConnected && configValid) {
     Serial.println("配置有效，发送启动邮件通知...");
     String subject = "短信转发器已启动";
     String body = "设备已启动\n设备地址: " + getDeviceUrl();
     sendEmailNotification(subject.c_str(), body.c_str());
+  } else if (!wifiConnected) {
+    Serial.println("WiFi未连接，跳过启动邮件通知");
   }
 }
 
 void loop() {
+  // 处理配网门户DNS劫持
+  processWiFiConfigPortalDns();
+
   // 处理HTTP请求
   server.handleClient();
 

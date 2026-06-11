@@ -1,35 +1,63 @@
-name: Build Arduino Firmware
+name: Build ESP32-S3 Firmware
 
 on:
   push:
     paths:
-      - 'code/**'
+      - "code/**"
+      - ".github/workflows/build.yml"
   pull_request:
+    paths:
+      - "code/**"
+      - ".github/workflows/build.yml"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  build-esp32s3:
+    name: ESP32-S3 SuperMini
     runs-on: ubuntu-latest
-    
+
+    env:
+      SKETCH_DIR: code
+      BUILD_DIR: build/esp32s3
+      FQBN: esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=4M,PartitionScheme=huge_app,PSRAM=disabled
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v6
-    
-    - name: Setup Arduino CLI
-      uses: arduino/setup-arduino-cli@v2
-    
-    - name: Install ESP32 platform
-      run: |
-        arduino-cli config init
-        arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
-        arduino-cli core update-index
-        arduino-cli core install esp32:esp32
-    
-    - name: Install dependencies
-      run: |
-        arduino-cli lib install "pdulib"
-        arduino-cli lib install "ReadyMail"
-    
-    - name: Compile firmware
-      run: |
-        arduino-cli compile --fqbn esp32:esp32:esp32c3 ./code/code.ino
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install ESP32 platform
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+
+      - name: Install Arduino libraries
+        run: |
+          arduino-cli lib install "pdulib"
+          arduino-cli lib install "ReadyMail"
+
+      - name: Compile firmware
+        run: |
+          mkdir -p "$BUILD_DIR"
+          arduino-cli compile \
+            --fqbn "$FQBN" \
+            --output-dir "$BUILD_DIR" \
+            --export-binaries \
+            "$SKETCH_DIR"
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sms-forwarding-esp32s3-firmware
+          if-no-files-found: error
+          path: |
+            build/esp32s3/*.bin
+            build/esp32s3/*.elf
+            build/esp32s3/*.map

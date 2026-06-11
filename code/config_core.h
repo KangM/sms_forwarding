@@ -226,5 +226,12 @@ void printConfigValidationResult(const String& source) {
 
 // 获取当前设备URL
 String getDeviceUrl() {
+  if (WiFi.status() == WL_CONNECTED) {
+    return "http://" + WiFi.localIP().toString() + "/";
+  }
+  IPAddress apIp = WiFi.softAPIP();
+  if (apIp != IPAddress(0, 0, 0, 0)) {
+    return "http://" + apIp.toString() + "/";
+  }
   return "http://" + WiFi.localIP().toString() + "/";
 }

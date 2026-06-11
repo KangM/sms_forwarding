@@ -291,6 +291,7 @@ const char* htmlToolsPage = R"rawliteral(
       </div>
       <div class="btn-group">
         <button type="button" class="btn-info" onclick="queryInfo('wifi')" style="background:#00BCD4;">📡 WiFi状态</button>
+        <button type="button" class="btn-info" onclick="clearWiFiConfig()" style="background:#795548;">清除WiFi记录</button>
       </div>
       <div class="result-box" id="queryResult"></div>
     </div>
@@ -372,6 +373,19 @@ const char* htmlToolsPage = R"rawliteral(
         .catch(error => {
           result.className = 'result-box result-error';
           result.textContent = '❌ 请求失败: ' + error;
+        });
+    }
+
+    function clearWiFiConfig() {
+      if (!confirm('确定清除已保存的WiFi连接记录并重启设备吗？')) return;
+
+      fetch('/wificlear', { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+          alert(data.message || 'WiFi连接记录已清除');
+        })
+        .catch(error => {
+          alert('请求失败: ' + error);
         });
     }
 
