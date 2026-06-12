@@ -53,6 +53,11 @@ void handleSave() {
   saveConfig();
   printConfigValidationResult("保存配置");
 
+  // 保存后未处于配网状态时，按最新配置有效性更新 LED 常态
+  if (!wifiConfigPortalActive) {
+    ledSetNormalState(configValid ? LED_RUNNING_IDLE : LED_ERROR);
+  }
+
   String html = R"rawliteral(
 <!DOCTYPE html>
 <html>

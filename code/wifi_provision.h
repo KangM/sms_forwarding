@@ -3,7 +3,7 @@
 #define WIFI_PROVISION_NAMESPACE "wifi_cfg"
 #define WIFI_PROVISION_DNS_PORT 53
 
-bool wifiConfigPortalActive = false;
+// wifiConfigPortalActive 定义在主程序全局，供多个模块共享
 
 bool loadSavedWiFiCredentials(String& ssid, String& pass) {
   preferences.begin(WIFI_PROVISION_NAMESPACE, true);

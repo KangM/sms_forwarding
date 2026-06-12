@@ -1,11 +1,9 @@
 ﻿#pragma once
 
 // setup 使用的 LED、AT 等待和网络注册辅助函数。
+// 重试循环中的等待：保持当前 LED 状态节奏，非阻塞刷新。
 void blink_short(unsigned long gap_time = 500) {
-  digitalWrite(LED_BUILTIN, LOW);
-  delay(50);
-  digitalWrite(LED_BUILTIN, HIGH);
-  delay(gap_time);
+  ledDelay(gap_time);
 }
 
 bool sendATandWaitOK(const char* cmd, unsigned long timeout) {

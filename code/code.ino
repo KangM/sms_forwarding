@@ -32,6 +32,7 @@ bool timeSynced = false;   // NTP时间是否已同步
 String configInvalidReason = "";
 bool pushDebugEnabled = false;
 String pushDebugLog = "";
+bool wifiConfigPortalActive = false;  // 是否处于配网门户模式
 
 #define PUSH_DEBUG_LOG_MAX 6000
 bool showWiFiDiagnostics = true;
@@ -45,6 +46,7 @@ ConcatSms concatBuffer[MAX_CONCAT_MESSAGES];  // 长短信缓存
 
 #include "config_core.h"
 #include "diagnostics_utils.h"
+#include "led_indicator.h"
 #include "web_pages.h"
 
 #include "web_config_handlers.h"
@@ -69,8 +71,8 @@ ConcatSms concatBuffer[MAX_CONCAT_MESSAGES];  // 长短信缓存
 
 void setup() {
   //  指示灯
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, HIGH);
+  ledInit();
+  ledSetState(LED_BOOTING);
 
   // USB 串口日志
   Serial.begin(115200);
@@ -92,6 +94,7 @@ void setup() {
   loadConfig();
 
   // ========== 先初始化模组 ==========
+  ledSetState(LED_MODEM_INIT);
   while (!sendATandWaitOK("AT", 1000)) {
     Serial.println("AT未响应，重试...");
     blink_short();
@@ -127,6 +130,7 @@ void setup() {
   Serial.println("PDU模式设置完成");
 
   //等待网络注册（LTE/4G）
+  ledSetState(LED_WAIT_CELLULAR);
   while (!waitCEREG()) {
     Serial.println("等待网络注册...");
     blink_short();
@@ -134,6 +138,7 @@ void setup() {
   Serial.println("网络已注册");
   // ========== 模组初始化完成 ==========
 
+  ledSetState(LED_WIFI_CONNECTING);
   bool wifiConnected = connectWiFiOrStartConfigPortal();
   printConfigValidationResult("上电加载");
 
@@ -189,7 +194,15 @@ void setup() {
   Serial.println("HTTP服务器已启动");
 
   ssl_client.setInsecure();
-  digitalWrite(LED_BUILTIN, LOW);
+
+  // 根据最终状态确定正常运行常态：配网中 > 配置无效 > 正常待机
+  if (wifiConfigPortalActive) {
+    ledSetNormalState(LED_WIFI_PORTAL);
+  } else if (!configValid) {
+    ledSetNormalState(LED_ERROR);
+  } else {
+    ledSetNormalState(LED_RUNNING_IDLE);
+  }
 
   // 如果配置有效，发送启动邮件通知
   if (wifiConnected && configValid && config.startupMailEnabled) {
@@ -221,4 +234,7 @@ void loop() {
   if (Serial.available()) Serial1.write(Serial.read());
   // 检查URC和解析
   checkSerial1URC();
+
+  // 刷新 LED 状态节奏
+  ledTick();
 }

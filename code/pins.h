@@ -26,4 +26,7 @@
 #define LED_BUILTIN 48
 #endif
 
+// S3 板载是 GP48 上的 WS2812 可寻址 RGB 灯，需用 rgbLedWrite 驱动。
+#define LED_IS_RGB
+
 #endif
