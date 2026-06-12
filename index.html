@@ -102,6 +102,29 @@
     .at-input-group { display: flex; gap: 10px; }
     .at-input-group input { flex: 1; font-family: monospace; }
     .at-input-group button { width: auto; min-width: 80px; margin-top: 0; }
+
+    /* 开关样式 */
+    .section-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .section-title-row .section-title { margin-bottom: 0; }
+    .switch { position: relative; display: inline-block; width: 46px; height: 24px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .2s; border-radius: 24px; }
+    .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .2s; border-radius: 50%; }
+    .switch input:checked + .slider { background-color: #4CAF50; }
+    .switch input:checked + .slider:before { transform: translateX(22px); }
+    .switch-label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #666; font-weight: normal; }
+
+    /* 短信列表样式 */
+    .sms-card { background: #fff; border: 1px solid #ddd; border-left: 4px solid #2196F3; border-radius: 5px; padding: 10px; margin-top: 10px; color: #333; }
+    .sms-meta { font-size: 12px; color: #555; margin-bottom: 6px; line-height: 1.6; }
+    .sms-badge { display: inline-block; padding: 2px 6px; border-radius: 3px; color: white; font-size: 12px; margin-right: 5px; }
+    .sms-read { background: #607D8B; }
+    .sms-unread { background: #E91E63; }
+    .sms-body { white-space: pre-wrap; word-break: break-word; color: #222; }
+
+    /* 推送调试日志 */
+    #pushDebugLog { background: #222; color: #d6ffd6; font-family: 'Courier New', monospace; min-height: 120px; max-height: 320px; overflow-y: auto; padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+    details.section summary { cursor: pointer; list-style: revert; }
   </style>
 </head>
 <body>
@@ -154,7 +177,16 @@
         </div>
         
         <div class="section">
-          <div class="section-title">📧 邮件通知设置</div>
+          <div class="section-title-row">
+            <div class="section-title">📧 邮件通知设置</div>
+            <label class="switch-label">
+              <span>启动通知</span>
+              <span class="switch">
+                <input type="checkbox" id="startupMail">
+                <span class="slider"></span>
+              </span>
+            </label>
+          </div>
           <div class="form-group">
             <label>SMTP服务器</label>
             <input type="text" name="smtpServer" id="smtpServer" placeholder="smtp.qq.com">
@@ -226,6 +258,15 @@
           </div>
         </div>
 
+        <div class="section">
+          <div class="section-title">🚫 号码黑名单</div>
+          <div class="hint" style="margin-bottom:15px;">每行一个号码，来自黑名单号码的短信将被忽略，不会触发邮件或推送。同样兼容 +86 前缀匹配。</div>
+          <div class="form-group">
+            <label>黑名单号码</label>
+            <textarea id="numberBlackList" rows="5" placeholder="每行一个号码"></textarea>
+          </div>
+        </div>
+
         <button type="submit">💾 保存配置</button>
       </form>
     </div>
@@ -256,9 +297,6 @@
           <button class="btn-info" onclick="queryInfo('siminfo')">💳 SIM卡信息</button>
           <button class="btn-info" onclick="queryInfo('network')">🌍 网络状态</button>
         </div>
-        <div class="btn-group">
-          <button style="background:#00BCD4;" onclick="queryInfo('wifi')">📡 WiFi状态</button>
-        </div>
         <div class="result-box" id="queryResult"></div>
       </div>
       
@@ -286,7 +324,47 @@
         <div class="hint">飞行模式关闭时模组可正常收发短信，开启后将关闭射频无法使用移动网络</div>
         <div class="result-box" id="flightResult"></div>
       </div>
-      
+
+      <div class="section">
+        <div class="section-title">📡 WiFi 管理</div>
+        <div class="btn-group">
+          <button class="btn-info" style="background:#00BCD4;" onclick="queryInfo('wifi')">📡 WiFi状态</button>
+          <button class="btn-info" style="background:#795548;" onclick="clearWiFiConfig()">清除WiFi记录</button>
+        </div>
+        <div class="hint">清除已保存的WiFi连接记录后设备会重启进入配网模式（演示页不会真正重启）。</div>
+        <div class="result-box" id="wifiResult"></div>
+      </div>
+
+      <details class="section">
+        <summary class="section-title">🔔 推送测试与调试</summary>
+        <div class="btn-group" style="margin-top:10px;">
+          <button class="btn-info" id="pushDebugToggleBtn" onclick="togglePushDebug()">开启推送日志</button>
+          <button class="btn-query" id="testPushBtn" onclick="testPush()">测试推送</button>
+        </div>
+        <div class="btn-group">
+          <button class="btn-info" onclick="refreshPushDebug()">刷新日志</button>
+          <button class="btn-info" onclick="clearPushDebug()">清空日志</button>
+        </div>
+        <div class="hint">开启后会记录推送请求、请求体、响应码和响应内容；关闭后不记录。</div>
+        <div class="result-box" id="testPushResult"></div>
+        <div id="pushDebugLog">暂无推送日志</div>
+      </details>
+
+      <div class="section">
+        <div class="section-title">📨 短信列表</div>
+        <div class="form-group">
+          <label>显示数量</label>
+          <select id="smsListLimit">
+            <option value="20" selected>前 20 条</option>
+            <option value="50">前 50 条</option>
+            <option value="100">前 100 条</option>
+          </select>
+        </div>
+        <button type="button" class="btn-info" id="smsListBtn" onclick="loadSmsList()">查看短信列表</button>
+        <div class="hint">读取模块短信存储中的短信，长短信会自动合并显示。</div>
+        <div class="result-box" id="smsListResult"></div>
+      </div>
+
       <div class="section">
         <div class="section-title">💻 AT 指令调试</div>
         <div id="atLog">等待输入指令...</div>
@@ -316,7 +394,9 @@
       smtpUser: '',
       smtpPass: '',
       smtpSendTo: '',
+      startupMail: true,
       adminPhone: '',
+      numberBlackList: '',
       keepAliveEnabled: false,
       keepAliveUrl: '',
       keepAliveMethod: 'GET',
@@ -432,7 +512,13 @@
         mode: 1,  // 1=正常, 4=飞行模式
         modeStr: '全功能模式（正常）',
         icon: '🟢'
-      }
+      },
+      smsList: [
+        { index: 3, status: 0, sender: '10086', timestamp: '2026-06-12 09:30:15', text: '【中国移动】尊敬的客户，您本月已使用流量 3.2GB，剩余 6.8GB。' },
+        { index: 2, status: 1, sender: '+8613800138000', timestamp: '2026-06-11 18:05:42', text: '验证码 638251，您正在登录，5分钟内有效，请勿泄露。' },
+        { index: 1, status: 1, sender: '95588', timestamp: '2026-06-10 12:11:03', text: '这是一条用于演示长短信合并显示的较长内容，固件会把分段的长短信自动拼接成完整一条后再展示，无需手动拼接。演示页这里直接展示合并后的效果。' }
+      ],
+      storageInfo: { used: 3, total: 50 }
     };
     // 加载配置
     function loadConfig() {
@@ -614,7 +700,9 @@
       document.getElementById('smtpUser').value = config.smtpUser || '';
       document.getElementById('smtpPass').value = config.smtpPass || '';
       document.getElementById('smtpSendTo').value = config.smtpSendTo || '';
+      document.getElementById('startupMail').checked = config.startupMail !== false;
       document.getElementById('adminPhone').value = config.adminPhone || '';
+      document.getElementById('numberBlackList').value = config.numberBlackList || '';
       document.getElementById('kaEnabled').checked = !!config.keepAliveEnabled;
       document.getElementById('kaUrl').value = config.keepAliveUrl || '';
       document.getElementById('kaMethod').value = config.keepAliveMethod === 'POST' ? 'POST' : 'GET';
@@ -634,7 +722,9 @@
         smtpUser: document.getElementById('smtpUser').value,
         smtpPass: document.getElementById('smtpPass').value,
         smtpSendTo: document.getElementById('smtpSendTo').value,
+        startupMail: document.getElementById('startupMail').checked,
         adminPhone: document.getElementById('adminPhone').value,
+        numberBlackList: document.getElementById('numberBlackList').value,
         keepAliveEnabled: document.getElementById('kaEnabled').checked,
         keepAliveUrl: document.getElementById('kaUrl').value,
         keepAliveMethod: document.getElementById('kaMethod').value === 'POST' ? 'POST' : 'GET',
@@ -848,6 +938,116 @@
       }, 1500);
     }
     
+    // 清除WiFi记录（模拟）
+    function clearWiFiConfig() {
+      if (!confirm('确定清除已保存的WiFi连接记录并重启设备吗？\n\n（演示页不会真正清除或重启）')) return;
+      const result = document.getElementById('wifiResult');
+      result.className = 'result-box result-success';
+      result.style.display = 'block';
+      result.innerHTML = '✅ WiFi连接记录已清除，设备即将重启进入配网模式（演示）。';
+    }
+
+    // 推送调试日志状态（模拟）
+    let pushDebugEnabled = false;
+    let pushDebugLogText = '';
+
+    function renderPushDebug() {
+      const log = document.getElementById('pushDebugLog');
+      const btn = document.getElementById('pushDebugToggleBtn');
+      log.textContent = pushDebugLogText || '暂无推送日志';
+      log.scrollTop = log.scrollHeight;
+      btn.textContent = pushDebugEnabled ? '关闭推送日志' : '开启推送日志';
+      btn.style.background = pushDebugEnabled ? '#E91E63' : '#607D8B';
+    }
+
+    function nowClock() {
+      const d = new Date();
+      const p = n => String(n).padStart(2, '0');
+      return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    }
+
+    function appendPushDebug(line) {
+      if (!pushDebugEnabled) return;
+      pushDebugLogText += '[' + nowClock() + '] ' + line + '\n';
+    }
+
+    function togglePushDebug() {
+      pushDebugEnabled = !pushDebugEnabled;
+      appendPushDebug('推送日志已' + (pushDebugEnabled ? '开启' : '关闭'));
+      renderPushDebug();
+    }
+
+    function refreshPushDebug() {
+      renderPushDebug();
+    }
+
+    function clearPushDebug() {
+      pushDebugLogText = '';
+      renderPushDebug();
+    }
+
+    // 测试推送（模拟）
+    function testPush() {
+      const btn = document.getElementById('testPushBtn');
+      const result = document.getElementById('testPushResult');
+      btn.disabled = true;
+      result.className = 'result-box result-loading';
+      result.style.display = 'block';
+      result.textContent = '正在发送测试推送...';
+
+      setTimeout(() => {
+        appendPushDebug('手动触发测试推送');
+        appendPushDebug('[通道1] REQUEST POST https://example.com/api');
+        appendPushDebug('[通道1] REQUEST BODY: {"sender":"TEST_PUSH","message":"这是一条推送通道测试消息","timestamp":"2026-06-12 12:00:00"}');
+        appendPushDebug('[通道1] RESPONSE CODE: 200');
+        appendPushDebug('[通道1] RESPONSE BODY: {"code":0,"msg":"success"}');
+        result.className = 'result-box result-success';
+        result.textContent = pushDebugEnabled
+          ? '测试推送已触发（演示）。请查看下方推送日志。'
+          : '测试推送已触发（演示）。推送日志当前关闭，开启后可查看请求和响应。';
+        renderPushDebug();
+        btn.disabled = false;
+      }, 1200);
+    }
+
+    // 短信列表（模拟）
+    function loadSmsList() {
+      const btn = document.getElementById('smsListBtn');
+      const result = document.getElementById('smsListResult');
+      const limit = document.getElementById('smsListLimit').value || '20';
+      btn.disabled = true;
+      btn.textContent = '正在读取...';
+      result.className = 'result-box result-loading';
+      result.style.display = 'block';
+      result.textContent = '正在读取前 ' + limit + ' 条短信，请稍候...';
+
+      setTimeout(() => {
+        const info = mockData.storageInfo;
+        const list = mockData.smsList.slice(0, parseInt(limit));
+        let html = '<div>模块短信存储(ME): 已用 ' + info.used + ' / 总容量 ' + info.total +
+                   ' | 剩余 ' + (info.total - info.used) + '</div>';
+        html += '<div>本次显示前 ' + limit + ' 条，实际读取 ' + list.length + ' 条。</div>';
+        if (list.length === 0) {
+          html += '模块短信存储中没有短信。';
+        } else {
+          list.forEach(sms => {
+            const badgeClass = sms.status === 0 ? 'sms-unread' : 'sms-read';
+            const badgeText = sms.status === 0 ? '未读' : '已读';
+            html += "<div class='sms-card'><div class='sms-meta'>" +
+              "<span class='sms-badge " + badgeClass + "'>" + badgeText + "</span>" +
+              '索引: ' + sms.index +
+              ' | 收信时间: ' + escapeHtml(sms.timestamp) +
+              ' | 发信人: ' + escapeHtml(sms.sender) +
+              "</div><div class='sms-body'>" + escapeHtml(sms.text) + '</div></div>';
+          });
+        }
+        result.className = 'result-box result-info';
+        result.innerHTML = html;
+        btn.disabled = false;
+        btn.textContent = '查看短信列表';
+      }, 1000);
+    }
+
     // AT指令日志
     function addATLog(msg, type = 'resp') {
       const log = document.getElementById('atLog');
