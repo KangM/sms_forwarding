@@ -63,6 +63,8 @@ ConcatSms concatBuffer[MAX_CONCAT_MESSAGES];  // 长短信缓存
 
 #include "keep_alive.h"
 
+#include "net_task.h"
+
 #include "sms_receive.h"
 
 #include "setup_helpers.h"
@@ -215,20 +217,26 @@ void setup() {
   } else if (!wifiConnected) {
     Serial.println("WiFi未连接，跳过启动邮件通知");
   }
+
+  // 启动网络后台任务：异步处理推送、邮件和掉线检测，避免阻塞主循环
+  startNetTask();
 }
 
 void loop() {
   // 处理配网门户DNS劫持
   processWiFiConfigPortalDns();
 
+  // WiFi 重连看门狗，掉线后主动恢复
+  wifiReconnectWatchdog();
+
+  // WiFi 漫游看门狗：弱信号时切换到同SSID更强的AP
+  wifiRoamWatchdog();
+
   // 处理HTTP请求
   server.handleClient();
 
   // 检查长短信超时
   checkConcatTimeout();
-
-  // 掉线检测
-  handleKeepAlive();
 
   // 本地透传
   if (Serial.available()) Serial1.write(Serial.read());

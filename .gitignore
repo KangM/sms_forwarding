@@ -4,6 +4,9 @@ code/wifi_config.h
 # 临时测试工具
 tools/
 
+# 本地编译/上传脚本(固件由 GitHub workflow 生成)
+flash-s3.ps1
+
 # Arduino/ESP32 编译输出
 build_s3/
 build/

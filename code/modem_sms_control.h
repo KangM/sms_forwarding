@@ -2,6 +2,8 @@
 
 // 短信发送、模组重启、黑名单和管理员短信命令处理。
 bool sendATandWaitOK(const char* cmd, unsigned long timeout);
+// enqueueEmailNotify 定义在 net_task.h（包含顺序在后），此处前置声明。
+bool enqueueEmailNotify(const String& subject, const String& body);
 
 // 发送短信（PDU模式）
 bool sendSMS(const char* phoneNumber, const char* message) {
@@ -191,10 +193,10 @@ void processAdminCommand(const char* sender, const char* text) {
       body += "短信内容: " + smsContent + "\n";
       body += "执行结果: " + String(success ? "成功" : "失败");
 
-      sendEmailNotification(subject.c_str(), body.c_str());
+      enqueueEmailNotify(subject, body);
     } else {
       Serial.println("SMS命令格式错误");
-      sendEmailNotification("命令执行失败", "SMS命令格式错误，正确格式: SMS:号码:内容");
+      enqueueEmailNotify("命令执行失败", "SMS命令格式错误，正确格式: SMS:号码:内容");
     }
   }
   // 处理 RESET 命令

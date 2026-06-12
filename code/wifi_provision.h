@@ -52,7 +52,14 @@ bool connectWiFiStation(const String& ssid, const String& pass, unsigned long ti
   if (ssid.length() == 0) return false;
 
   WiFi.mode(WIFI_STA);
+  // 关闭WiFi省电休眠，避免射频休眠导致连接“假在线”、推送超时和掉线不恢复
+  WiFi.setSleep(false);
+  // 断开后自动重连，并在重启后自动连接已保存的AP
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
+  // 同SSID多AP（漫游）场景：全信道扫描 + 按信号强度排序，优先连最强的AP
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   WiFi.begin(ssid.c_str(), pass.c_str(), 0, nullptr, true);
 
   Serial.println("连接WiFi: " + ssid);
@@ -62,6 +69,8 @@ bool connectWiFiStation(const String& ssid, const String& pass, unsigned long ti
   }
 
   if (WiFi.status() == WL_CONNECTED) {
+    // 连接成功后再次确保关闭休眠（mode/begin 可能重置该标志）
+    WiFi.setSleep(false);
     Serial.println("WiFi已连接");
     Serial.print("IP地址: ");
     Serial.println(WiFi.localIP());
@@ -86,6 +95,147 @@ bool connectWiFiOrStartConfigPortal() {
 
   startWiFiConfigPortal();
   return false;
+}
+
+// 强制断开并用已保存凭据重连（供掉线检测在“假在线”时调用）
+void forceWiFiReconnect(const char* reason) {
+  if (wifiConfigPortalActive) return;  // 配网模式不干预
+
+  static unsigned long lastForce = 0;
+  unsigned long now = millis();
+  // 限频：30 秒内最多强制重连一次，避免频繁打断
+  if (lastForce != 0 && now - lastForce < 30000) {
+    Serial.println("[WiFi] 跳过强制重连（30秒内已执行过）原因: " + String(reason));
+    return;
+  }
+  lastForce = now;
+
+  String ssid, pass;
+  if (loadSavedWiFiCredentials(ssid, pass) && ssid.length() > 0) {
+    Serial.println("[WiFi] 强制重连(" + String(reason) + ") SSID: " + ssid);
+    WiFi.disconnect();
+    delay(100);
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(ssid.c_str(), pass.c_str(), 0, nullptr, true);
+  } else {
+    Serial.println("[WiFi] 强制重连失败：无已保存凭据");
+  }
+}
+
+// WiFi 重连看门狗：在 loop 中周期调用。
+// 当已配置过WiFi且不在配网门户模式时，检测掉线并主动重连，避免“假在线”后无法恢复。
+void wifiReconnectWatchdog() {
+  if (wifiConfigPortalActive) return;  // 配网模式不干预
+
+  static unsigned long lastCheck = 0;
+  static unsigned long disconnectedSince = 0;
+  static wl_status_t lastStatus = WL_IDLE_STATUS;
+  unsigned long now = millis();
+
+  // 每 5 秒检查一次
+  if (now - lastCheck < 5000) return;
+  lastCheck = now;
+
+  wl_status_t st = WiFi.status();
+  // 状态变化时打印，便于排查
+  if (st != lastStatus) {
+    Serial.println("[WiFi] 状态变化: " + String((int)lastStatus) + " -> " + String((int)st) +
+                   (st == WL_CONNECTED ? (" 已连接 IP=" + WiFi.localIP().toString()) : ""));
+    lastStatus = st;
+  }
+
+  if (st == WL_CONNECTED) {
+    disconnectedSince = 0;
+    return;
+  }
+
+  // 记录首次检测到掉线的时间
+  if (disconnectedSince == 0) {
+    disconnectedSince = now;
+    Serial.println("[WiFi] 检测到掉线(status=" + String((int)st) + ")，尝试重连...");
+    WiFi.reconnect();
+    return;
+  }
+
+  // 持续掉线超过 30 秒，做一次更彻底的重连
+  if (now - disconnectedSince > 30000) {
+    Serial.println("[WiFi] 长时间掉线，执行强制重连");
+    forceWiFiReconnect("看门狗检测长时间掉线");
+    disconnectedSince = now;  // 重置计时，避免频繁重连
+  }
+}
+
+// 漫游看门狗：同SSID多AP场景下，若当前AP信号过弱，扫描并切换到更强的AP。
+// 使用异步扫描，避免阻塞主循环。基础 Arduino WiFi 不支持 802.11k/v/r，
+// 因此这里手动实现“弱信号触发重选AP”。
+#define WIFI_ROAM_RSSI_THRESHOLD -75   // 当前信号弱于此值才考虑漫游(dBm)
+#define WIFI_ROAM_RSSI_IMPROVE 8       // 候选AP至少强这么多才切换(dB)
+#define WIFI_ROAM_CHECK_INTERVAL 60000 // 检查间隔(ms)
+
+void wifiRoamWatchdog() {
+  if (wifiConfigPortalActive) return;
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  static unsigned long lastCheck = 0;
+  static bool scanning = false;
+  unsigned long now = millis();
+
+  if (!scanning) {
+    if (now - lastCheck < WIFI_ROAM_CHECK_INTERVAL) return;
+    lastCheck = now;
+
+    int curRssi = WiFi.RSSI();
+    if (curRssi >= WIFI_ROAM_RSSI_THRESHOLD) return;  // 信号够好，不折腾
+
+    Serial.println("[Roam] 当前信号较弱(" + String(curRssi) + "dBm)，发起异步扫描寻找更强AP");
+    WiFi.scanNetworks(true);  // 异步扫描
+    scanning = true;
+    return;
+  }
+
+  // 扫描进行中：检查是否完成
+  int n = WiFi.scanComplete();
+  if (n == WIFI_SCAN_RUNNING) return;
+  scanning = false;
+
+  if (n <= 0) {
+    WiFi.scanDelete();
+    return;
+  }
+
+  String curSsid = WiFi.SSID();
+  int curRssi = WiFi.RSSI();
+  uint8_t* curBssid = WiFi.BSSID();
+
+  int bestIdx = -1;
+  int bestRssi = curRssi;
+  for (int i = 0; i < n; i++) {
+    if (WiFi.SSID(i) != curSsid) continue;        // 只看同名AP
+    if (WiFi.RSSI(i) > bestRssi) {
+      bestRssi = WiFi.RSSI(i);
+      bestIdx = i;
+    }
+  }
+
+  if (bestIdx >= 0 && bestRssi - curRssi >= WIFI_ROAM_RSSI_IMPROVE) {
+    uint8_t* newBssid = WiFi.BSSID(bestIdx);
+    bool sameAp = curBssid && newBssid && memcmp(curBssid, newBssid, 6) == 0;
+    if (!sameAp) {
+      Serial.println("[Roam] 发现更强AP: " + String(bestRssi) + "dBm (当前 " + String(curRssi) +
+                     "dBm)，切换到信道 " + String(WiFi.channel(bestIdx)));
+      String ssid, pass;
+      if (loadSavedWiFiCredentials(ssid, pass) && ssid.length() > 0) {
+        WiFi.disconnect();
+        delay(100);
+        // 指定 BSSID 连接到更强的那台AP
+        WiFi.begin(ssid.c_str(), pass.c_str(), WiFi.channel(bestIdx), newBssid, true);
+      }
+    }
+  }
+
+  WiFi.scanDelete();
 }
 
 String scannedWiFiOptions(const String& selectedSsid) {

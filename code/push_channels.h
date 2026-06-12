@@ -8,10 +8,10 @@ void sendSMSToServer(const char* sender, const char* message, const char* timest
 // 发送单个推送通道
 #include "push_debug.h"
 
-void sendToChannel(const PushChannel& channel, const char* sender, const char* message, const char* timestamp) {
+bool sendToChannel(const PushChannel& channel, const char* sender, const char* message, const char* timestamp) {
   if (!channel.enabled) {
     appendPushDebugLog("跳过未启用的推送通道");
-    return;
+    return false;
   }
 
   // 对于某些推送方式，URL可以为空（使用默认URL）
@@ -20,12 +20,18 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
                   channel.type == PUSH_TYPE_CUSTOM);
   if (needUrl && channel.url.length() == 0) {
     appendPushDebugLog("跳过推送通道：缺少URL，类型=" + String(channel.type));
-    return;
+    return false;
   }
 
   HTTPClient http;
+  // 设置连接/读取超时，避免网络异常时长时间阻塞主循环
+  http.setConnectTimeout(8000);
+  http.setTimeout(8000);
   String channelName = channel.name.length() > 0 ? channel.name : ("通道" + String(channel.type));
+  Serial.println("[Push] 发送到通道: " + channelName);
   appendPushDebugLog("准备发送到推送通道: " + channelName);
+
+  unsigned long t0 = millis();
 
   int httpCode = 0;
   String senderEscaped = jsonEscape(String(sender));
@@ -149,7 +155,7 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
       // 自定义模板
       if (channel.customBody.length() == 0) {
         appendPushDebugLog("[" + channelName + "] 跳过：自定义模板为空");
-        return;
+        return false;
       }
       http.begin(channel.url);
       http.addHeader("Content-Type", "application/json");
@@ -242,26 +248,32 @@ void sendToChannel(const PushChannel& channel, const char* sender, const char* m
 
     default:
       appendPushDebugLog("未知推送类型: " + String(channel.type));
-      return;
+      return false;
   }
 
-  if (httpCode > 0) {
+  unsigned long cost = millis() - t0;
+  bool ok = httpCode > 0;
+  if (ok) {
     String response = http.getString();
+    Serial.println("[Push] 通道[" + channelName + "] 响应码=" + String(httpCode) + " 耗时=" + String(cost) + "ms");
     logPushResponse(channelName, httpCode, response);
   } else {
     String err = http.errorToString(httpCode);
+    Serial.println("[Push] 通道[" + channelName + "] 失败=" + err + " 耗时=" + String(cost) + "ms");
     logPushResponse(channelName, httpCode, err);
   }
   http.end();
+  return ok;
 }
 
-// 发送短信到所有启用的推送通道
+// 发送短信到所有启用的推送通道（由网络后台任务调用，可安全阻塞）
 void sendSMSToServer(const char* sender, const char* message, const char* timestamp) {
-  if (pushDebugEnabled) {
-    printWiFiDiagnostics("准备HTTP推送");
-  }
+  // 推送前打印WiFi诊断（含RSSI和网关Ping），便于判断是否“假在线”
+  printWiFiDiagnostics("准备HTTP推送");
+  Serial.println("[Push] 准备推送，发送者=" + String(sender));
   appendPushDebugLog("准备推送短信，发送者=" + String(sender) + "，时间=" + String(timestamp));
   if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[Push] 取消：WiFi未连接(status=" + String((int)WiFi.status()) + ")");
     appendPushDebugLog("推送取消：WiFi未连接，状态=" + wifiStatusText(WiFi.status()));
     return;
   }
@@ -275,16 +287,22 @@ void sendSMSToServer(const char* sender, const char* message, const char* timest
   }
 
   if (!hasEnabledChannel) {
+    Serial.println("[Push] 取消：没有启用且配置完整的推送通道");
     appendPushDebugLog("推送取消：没有启用且配置完整的推送通道");
     return;
   }
 
+  Serial.println("[Push] 开始多通道推送");
   appendPushDebugLog("开始多通道推送请求尝试");
+  bool anySuccess = false;
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
     if (isPushChannelValid(config.pushChannels[i])) {
-      sendToChannel(config.pushChannels[i], sender, message, timestamp);
+      if (sendToChannel(config.pushChannels[i], sender, message, timestamp)) {
+        anySuccess = true;
+      }
       delay(100); // 短暂延迟避免请求过快
     }
   }
+  Serial.println("[Push] 多通道推送完成，是否有成功=" + String(anySuccess ? "是" : "否"));
   appendPushDebugLog("多通道推送请求尝试完成");
 }

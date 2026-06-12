@@ -1,6 +1,8 @@
 ﻿#pragma once
 
 // 推送日志开关、测试推送和请求/响应日志函数。
+// enqueueTestPush 定义在 net_task.h（包含顺序在后），此处前置声明。
+bool enqueueTestPush(const String& sender, const String& message, const String& timestamp);
 String formatUptimeClock() {
   unsigned long totalSeconds = millis() / 1000;
   unsigned long hours = totalSeconds / 3600;
@@ -52,7 +54,7 @@ void handleTestPush() {
 
   appendPushDebugLog("手动触发测试推送");
   String timestamp = formatSmsTimestamp("26010112000032");
-  sendSMSToServer("TEST_PUSH", "这是一条推送通道测试消息", timestamp.c_str());
+  enqueueTestPush("TEST_PUSH", "这是一条推送通道测试消息", timestamp);
 
   String json = "{";
   json += "\"success\":true,";

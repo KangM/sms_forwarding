@@ -297,7 +297,7 @@ bool collectSmsEntriesFromCmgl(int limit, SmsListEntry entries[], int& entryCoun
 
 bool readStoredSmsPduLineByIndex(int smsIndex, String& pduLine) {
   String resp = sendATCommand(("AT+CMGR=" + String(smsIndex)).c_str(), 5000);
-  Serial.println("CMGR索引 " + String(smsIndex) + " 响应: " + resp);
+  Serial.println("CMGR索引 " + String(smsIndex) + " 响应长度: " + String(resp.length()) + " 字符");
 
   int lineStart = 0;
   for (int i = 0; i <= resp.length(); i++) {
