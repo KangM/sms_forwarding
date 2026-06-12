@@ -15,6 +15,9 @@ param(
     [switch]$Clean,
     [switch]$NoMonitor,
     [switch]$Monitor,
+    [switch]$Dtr,
+    [switch]$Rts,
+    [switch]$Notify,
     [switch]$Help
 )
 
@@ -40,6 +43,9 @@ Options:
   -Clean             Clean build cache before compiling
   -NoMonitor         Do not open the serial monitor after upload
   -Monitor           Only open the serial monitor; do not compile or upload
+  -Dtr               Assert DTR while monitoring. Default: off
+  -Rts               Assert RTS while monitoring. Default: off
+  -Notify            Show a local notification and play a sound on completion or failure
   -Help              Show this help
 
 Examples:
@@ -54,6 +60,9 @@ Examples:
 
   .\$scriptName -Monitor -Port COM6
       Open only the interactive timestamped serial monitor. No compile or upload.
+
+  .\$scriptName -Port COM6 -Notify
+      Compile, upload, then show a local notification and play a sound.
 "@
 }
 
@@ -62,24 +71,80 @@ if ($Help -or $PSBoundParameters.Count -eq 0) {
     return
 }
 
+function Send-LocalNotification {
+    param(
+        [string]$Title,
+        [string]$Message,
+        [ValidateSet("Info", "Success", "Warning", "Error")]
+        [string]$Level = "Info"
+    )
+
+    if (-not $Notify) {
+        return
+    }
+
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+        Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue
+
+        switch ($Level) {
+            "Success" { [System.Media.SystemSounds]::Asterisk.Play(); $icon = [System.Windows.Forms.ToolTipIcon]::Info }
+            "Warning" { [System.Media.SystemSounds]::Exclamation.Play(); $icon = [System.Windows.Forms.ToolTipIcon]::Warning }
+            "Error" { [System.Media.SystemSounds]::Hand.Play(); $icon = [System.Windows.Forms.ToolTipIcon]::Error }
+            default { [System.Media.SystemSounds]::Asterisk.Play(); $icon = [System.Windows.Forms.ToolTipIcon]::Info }
+        }
+
+        $burntToast = Get-Command New-BurntToastNotification -ErrorAction SilentlyContinue
+        if ($burntToast) {
+            New-BurntToastNotification -Text $Title, $Message | Out-Null
+            return
+        }
+
+        $notifyIcon = New-Object System.Windows.Forms.NotifyIcon
+        $notifyIcon.Icon = [System.Drawing.SystemIcons]::Information
+        $notifyIcon.BalloonTipIcon = $icon
+        $notifyIcon.BalloonTipTitle = $Title
+        $notifyIcon.BalloonTipText = $Message
+        $notifyIcon.Visible = $true
+        $notifyIcon.ShowBalloonTip(5000)
+        Start-Sleep -Milliseconds 800
+        $notifyIcon.Dispose()
+    } catch {
+        Write-Host "Notification failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
 function Start-SerialMonitor {
-    param([string]$PortName, [int]$BaudRate)
+    param([string]$PortName, [int]$BaudRate, [bool]$AssertDtr, [bool]$AssertRts)
 
     Write-Host "`n=== Serial monitor $PortName @ $BaudRate ===" -ForegroundColor Cyan
     Write-Host "Type a line and press Enter to send. Local commands: :help, :q" -ForegroundColor DarkCyan
+    Write-Host ("DTR={0}, RTS={1}" -f $AssertDtr, $AssertRts) -ForegroundColor DarkGray
 
     $sp = New-Object System.IO.Ports.SerialPort $PortName, $BaudRate, ([System.IO.Ports.Parity]::None), 8, ([System.IO.Ports.StopBits]::One)
     $sp.Encoding = [System.Text.Encoding]::UTF8
     $sp.ReadTimeout = 200
     $sp.NewLine = "`r`n"
-    $sp.DtrEnable = $true
-    $sp.RtsEnable = $true
+    $sp.DtrEnable = $AssertDtr
+    $sp.RtsEnable = $AssertRts
 
-    try {
-        $sp.Open()
-    } catch {
-        Write-Host "Failed to open serial port $PortName`: $($_.Exception.Message)" -ForegroundColor Red
-        return
+    function Open-SerialPort {
+        if ($sp.IsOpen) {
+            return $true
+        }
+        try {
+            $sp.Open()
+            $sp.DtrEnable = $AssertDtr
+            $sp.RtsEnable = $AssertRts
+            Write-Host "Serial port opened." -ForegroundColor DarkGray
+            return $true
+        } catch {
+            return $false
+        }
+    }
+
+    if (-not (Open-SerialPort)) {
+        Write-Host "Waiting for serial port $PortName..." -ForegroundColor Yellow
     }
 
     $buffer = ""
@@ -103,10 +168,29 @@ function Start-SerialMonitor {
     try {
         Write-SerialPrompt $inputLine
         while ($true) {
+            if (-not $sp.IsOpen) {
+                if (Open-SerialPort) {
+                    Write-SerialPrompt $inputLine
+                } else {
+                    Start-Sleep -Milliseconds 500
+                    continue
+                }
+            }
+
             try {
                 $chunk = $sp.ReadExisting()
             } catch [TimeoutException] {
                 $chunk = ""
+            } catch [System.InvalidOperationException] {
+                Write-Host "`nSerial port disconnected, waiting for reconnect..." -ForegroundColor Yellow
+                try { $sp.Close() } catch {}
+                Start-Sleep -Milliseconds 500
+                continue
+            } catch [System.IO.IOException] {
+                Write-Host "`nSerial port I/O error, waiting for reconnect..." -ForegroundColor Yellow
+                try { $sp.Close() } catch {}
+                Start-Sleep -Milliseconds 500
+                continue
             }
 
             if ($chunk.Length -gt 0) {
@@ -138,7 +222,16 @@ function Start-SerialMonitor {
                         continue
                     }
                     if ($lineToSend.Length -gt 0) {
-                        $sp.WriteLine($lineToSend)
+                        if ($sp.IsOpen) {
+                            try {
+                                $sp.WriteLine($lineToSend)
+                            } catch {
+                                Write-Host "Send failed, serial port is reconnecting." -ForegroundColor Yellow
+                                try { $sp.Close() } catch {}
+                            }
+                        } else {
+                            Write-Host "Send skipped, serial port is not open." -ForegroundColor Yellow
+                        }
                     }
                     Write-SerialPrompt $inputLine
                     continue
@@ -176,7 +269,7 @@ function Start-SerialMonitor {
 }
 
 if ($Monitor) {
-    Start-SerialMonitor -PortName $Port -BaudRate $Baud
+    Start-SerialMonitor -PortName $Port -BaudRate $Baud -AssertDtr $Dtr.IsPresent -AssertRts $Rts.IsPresent
     return
 }
 
@@ -294,6 +387,7 @@ Write-Host ""
 
 if ($exit -ne 0) {
     Write-Host "Compile failed. Full log: $logFile" -ForegroundColor Red
+    Send-LocalNotification -Title "SMS Forwarding build failed" -Message "Compile failed. Full log: $logFile" -Level Error
     exit $exit
 }
 Write-Host ("Compile complete. Compiled {0} files. Full log: {1}" -f $count, $logFile) -ForegroundColor Green
@@ -302,11 +396,13 @@ Write-Host "`n=== Upload to $Port ===" -ForegroundColor Green
 & arduino-cli upload -p $Port --fqbn $Fqbn $SketchDir
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Upload failed." -ForegroundColor Red
+    Send-LocalNotification -Title "SMS Forwarding upload failed" -Message "Upload to $Port failed." -Level Error
     exit $LASTEXITCODE
 }
 Write-Host "Upload complete." -ForegroundColor Green
+Send-LocalNotification -Title "SMS Forwarding upload complete" -Message "Firmware uploaded to $Port successfully." -Level Success
 
 if (-not $NoMonitor) {
     Start-Sleep -Milliseconds 800
-    Start-SerialMonitor -PortName $Port -BaudRate $Baud
+    Start-SerialMonitor -PortName $Port -BaudRate $Baud -AssertDtr $Dtr.IsPresent -AssertRts $Rts.IsPresent
 }

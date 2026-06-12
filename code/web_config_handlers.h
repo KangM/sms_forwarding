@@ -1,6 +1,15 @@
 ﻿#pragma once
 
 // Web 配置页和工具页入口处理函数。
+String htmlAttributeEscape(const String& value) {
+  String out = value;
+  out.replace("&", "&amp;");
+  out.replace("\"", "&quot;");
+  out.replace("<", "&lt;");
+  out.replace(">", "&gt;");
+  return out;
+}
+
 // 处理配置页面请求
 void handleRoot() {
   if (!checkAuth()) return;
@@ -17,6 +26,14 @@ void handleRoot() {
   html.replace("%STARTUP_MAIL_CHECKED%", config.startupMailEnabled ? "checked" : "");
   html.replace("%ADMIN_PHONE%", config.adminPhone);
   html.replace("%NUMBER_BLACK_LIST%", config.numberBlackList);
+  html.replace("%PUSH_FILTER_CHECKED%", config.pushFilterEnabled ? "checked" : "");
+  html.replace("%PUSH_FILTER_TARGET_SENDER_SEL%", config.pushFilterTarget == PUSH_FILTER_TARGET_SENDER ? " selected" : "");
+  html.replace("%PUSH_FILTER_TARGET_MESSAGE_SEL%", config.pushFilterTarget == PUSH_FILTER_TARGET_MESSAGE ? " selected" : "");
+  html.replace("%PUSH_FILTER_MODE_CONTAINS_SEL%", config.pushFilterMode == PUSH_FILTER_MODE_CONTAINS ? " selected" : "");
+  html.replace("%PUSH_FILTER_MODE_NOT_CONTAINS_SEL%", config.pushFilterMode == PUSH_FILTER_MODE_NOT_CONTAINS ? " selected" : "");
+  html.replace("%PUSH_FILTER_MODE_STARTS_WITH_SEL%", config.pushFilterMode == PUSH_FILTER_MODE_STARTS_WITH ? " selected" : "");
+  html.replace("%PUSH_FILTER_MODE_ENDS_WITH_SEL%", config.pushFilterMode == PUSH_FILTER_MODE_ENDS_WITH ? " selected" : "");
+  html.replace("%PUSH_FILTER_EXPR%", htmlAttributeEscape(config.pushFilterExpr));
 
   // 掉线检测配置
   html.replace("%KA_CHECKED%", config.keepAliveEnabled ? "checked" : "");

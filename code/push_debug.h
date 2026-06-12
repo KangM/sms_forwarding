@@ -69,6 +69,40 @@ void handleTestPush() {
   server.send(200, "application/json", json);
 }
 
+void handlePushFilterTest() {
+  if (!checkAuth()) return;
+
+  PushFilterRule rule;
+  rule.enabled = server.arg("enabled") == "on" || server.arg("enabled") == "true" || server.arg("enabled") == "1";
+  rule.target = server.arg("target") == "sender" ? PUSH_FILTER_TARGET_SENDER : PUSH_FILTER_TARGET_MESSAGE;
+
+  String mode = server.arg("mode");
+  if (mode == "not_contains") {
+    rule.mode = PUSH_FILTER_MODE_NOT_CONTAINS;
+  } else if (mode == "starts_with") {
+    rule.mode = PUSH_FILTER_MODE_STARTS_WITH;
+  } else if (mode == "ends_with") {
+    rule.mode = PUSH_FILTER_MODE_ENDS_WITH;
+  } else {
+    rule.mode = PUSH_FILTER_MODE_CONTAINS;
+  }
+
+  rule.expr = server.arg("expr");
+  String sender = server.arg("sender");
+  String message = server.arg("message");
+
+  PushFilterEvalResult result = evaluatePushFilter(rule, sender, message);
+  String json = "{";
+  json += "\"success\":" + String(result.valid ? "true" : "false") + ",";
+  json += "\"allowed\":" + String(result.allowed ? "true" : "false") + ",";
+  json += "\"message\":\"" + jsonEscape(result.reason) + "\",";
+  json += "\"target\":\"" + jsonEscape(result.targetName) + "\",";
+  json += "\"mode\":\"" + jsonEscape(result.modeName) + "\",";
+  json += "\"expr\":\"" + jsonEscape(result.expr) + "\"";
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
 void logPushRequest(const String& channelName, const String& method, const String& url, const String& body) {
   if (!pushDebugEnabled) return;
   appendPushDebugLog("[" + channelName + "] REQUEST " + method + " " + url);

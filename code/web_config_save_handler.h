@@ -31,6 +31,19 @@ void handleSave() {
   config.startupMailEnabled = server.arg("startupMail") == "on";
   config.adminPhone = server.arg("adminPhone");
   config.numberBlackList = server.arg("numberBlackList");
+  config.pushFilterEnabled = server.arg("pushFilterEnabled") == "on";
+  config.pushFilterTarget = server.arg("pushFilterTarget") == "sender" ? PUSH_FILTER_TARGET_SENDER : PUSH_FILTER_TARGET_MESSAGE;
+  String pushFilterMode = server.arg("pushFilterMode");
+  if (pushFilterMode == "not_contains") {
+    config.pushFilterMode = PUSH_FILTER_MODE_NOT_CONTAINS;
+  } else if (pushFilterMode == "starts_with") {
+    config.pushFilterMode = PUSH_FILTER_MODE_STARTS_WITH;
+  } else if (pushFilterMode == "ends_with") {
+    config.pushFilterMode = PUSH_FILTER_MODE_ENDS_WITH;
+  } else {
+    config.pushFilterMode = PUSH_FILTER_MODE_CONTAINS;
+  }
+  config.pushFilterExpr = server.arg("pushFilterExpr");
 
   // 掉线检测配置
   config.keepAliveEnabled = server.arg("kaEnabled") == "on";

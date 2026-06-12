@@ -243,8 +243,23 @@ void collectSmsIndexFromCmgl(const String& resp, int indexes[], int& indexCount)
   }
 }
 
-bool collectSmsEntriesFromCmgl(int limit, SmsListEntry entries[], int& entryCount) {
+void appendLatestSmsListEntry(const SmsListEntry& entry, int limit, SmsListEntry entries[], int& entryCount) {
+  if (limit <= 0) return;
+
+  if (entryCount < limit) {
+    entries[entryCount++] = entry;
+    return;
+  }
+
+  for (int i = 1; i < limit; i++) {
+    entries[i - 1] = entries[i];
+  }
+  entries[limit - 1] = entry;
+}
+
+bool collectSmsEntriesFromCmgl(int limit, SmsListEntry entries[], int& entryCount, int& scannedCount) {
   entryCount = 0;
+  scannedCount = 0;
   while (Serial1.available()) Serial1.read();
   Serial1.println("AT+CMGL=4");
 
@@ -261,19 +276,21 @@ bool collectSmsEntriesFromCmgl(int limit, SmsListEntry entries[], int& entryCoun
         line.trim();
         if (line.length() > 0) {
           if (line == "OK") {
-            Serial.println("CMGL索引扫描完成，数量: " + String(entryCount));
+            Serial.println("CMGL索引扫描完成，已扫描数量: " + String(scannedCount) + "，保留数量: " + String(entryCount));
             return true;
           }
           if (line.indexOf("ERROR") >= 0) {
             Serial.println("CMGL索引扫描失败: " + line);
             return false;
           }
-          if (line.startsWith("+CMGL:") && entryCount < limit) {
-            entries[entryCount].index = getCsvField(line, 0).toInt();
-            entries[entryCount].status = getCsvField(line, 1).toInt();
-            entries[entryCount].tpduLength = getCsvField(line, 3).toInt();
-            if (entries[entryCount].index > 0) {
-              entryCount++;
+          if (line.startsWith("+CMGL:")) {
+            SmsListEntry entry;
+            entry.index = getCsvField(line, 0).toInt();
+            entry.status = getCsvField(line, 1).toInt();
+            entry.tpduLength = getCsvField(line, 3).toInt();
+            if (entry.index > 0) {
+              scannedCount++;
+              appendLatestSmsListEntry(entry, limit, entries, entryCount);
             }
           }
         }
@@ -291,7 +308,7 @@ bool collectSmsEntriesFromCmgl(int limit, SmsListEntry entries[], int& entryCoun
     delay(1);
   }
 
-  Serial.println("CMGL索引扫描超时，已收集数量: " + String(entryCount));
+  Serial.println("CMGL索引扫描超时，已扫描数量: " + String(scannedCount) + "，保留数量: " + String(entryCount));
   return entryCount > 0;
 }
 
@@ -400,12 +417,14 @@ void handleSmsList() {
   sendATCommand("AT+CMGF=0", 2000);
   int limit = getSmsListLimit();
   int entryCount = 0;
-  bool success = collectSmsEntriesFromCmgl(limit, smsListEntries, entryCount);
+  int scannedCount = 0;
+  bool success = collectSmsEntriesFromCmgl(limit, smsListEntries, entryCount, scannedCount);
 
   String json = "{";
   json += "\"success\":" + String(success ? "true" : "false") + ",";
   json += "\"storageHtml\":\"" + jsonEscape(smsStorageHtml(storageInfo)) + "\",";
   json += "\"limit\":" + String(limit) + ",";
+  json += "\"scanned\":" + String(scannedCount) + ",";
   json += "\"count\":" + String(entryCount) + ",";
   json += "\"entries\":[";
   for (int i = 0; i < entryCount; i++) {

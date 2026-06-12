@@ -16,6 +16,10 @@ void saveConfig() {
   preferences.putString("webUser", config.webUser);
   preferences.putString("webPass", config.webPass);
   preferences.putString("numBlkList", config.numberBlackList);
+  preferences.putBool("pfEn", config.pushFilterEnabled);
+  preferences.putUChar("pfTarget", (uint8_t)config.pushFilterTarget);
+  preferences.putUChar("pfMode", (uint8_t)config.pushFilterMode);
+  preferences.putString("pfExpr", config.pushFilterExpr);
 
   // 保存掉线检测配置
   preferences.putBool("kaEn", config.keepAliveEnabled);
@@ -53,6 +57,10 @@ void loadConfig() {
   config.webUser = preferences.getString("webUser", DEFAULT_WEB_USER);
   config.webPass = preferences.getString("webPass", DEFAULT_WEB_PASS);
   config.numberBlackList = preferences.getString("numBlkList", "");
+  config.pushFilterEnabled = preferences.getBool("pfEn", false);
+  config.pushFilterTarget = (PushFilterTarget)preferences.getUChar("pfTarget", PUSH_FILTER_TARGET_MESSAGE);
+  config.pushFilterMode = (PushFilterMode)preferences.getUChar("pfMode", PUSH_FILTER_MODE_CONTAINS);
+  config.pushFilterExpr = preferences.getString("pfExpr", "");
 
   // 加载掉线检测配置
   config.keepAliveEnabled = preferences.getBool("kaEn", false);

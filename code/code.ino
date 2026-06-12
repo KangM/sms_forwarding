@@ -43,6 +43,12 @@ char serialBuf[SERIAL_BUFFER_SIZE];
 int serialBufLen = 0;
 
 ConcatSms concatBuffer[MAX_CONCAT_MESSAGES];  // 长短信缓存
+TaskHandle_t appLoopTaskHandle = nullptr;
+unsigned long loopPerfWindowStartMs = 0;
+unsigned long loopPerfLastTickMs = 0;
+unsigned long loopPerfIterations = 0;
+unsigned long loopPerfMaxGapMs = 0;
+unsigned long perfAutoReportAtMs = 0;
 
 #include "config_core.h"
 #include "diagnostics_utils.h"
@@ -56,6 +62,7 @@ void handleWiFiNetworkFailure(const String& source);
 void wifiReachabilityWatchdog();
 void forceWiFiFullReset(const char* reason);
 void setupWiFiEventLogging();
+void printSerialConsolePerf();
 
 #include "at_command.h"
 
@@ -87,6 +94,9 @@ void setup() {
   // USB 串口日志
   Serial.begin(115200);
   delay(1500);  // 等 USB CDC 稳定
+  appLoopTaskHandle = xTaskGetCurrentTaskHandle();
+  loopPerfWindowStartMs = millis();
+  loopPerfLastTickMs = loopPerfWindowStartMs;
   Serial.println("USB串口命令台已启用，输入 HELP 查看命令。AT... 会按整行转发给模组。");
   setupWiFiEventLogging();
 
@@ -197,6 +207,7 @@ void setup() {
   server.on("/smspdu", handleSmsPdu);
   server.on("/pushdebug", handlePushDebug);
   server.on("/testpush", HTTP_POST, handleTestPush);
+  server.on("/pushfiltertest", HTTP_POST, handlePushFilterTest);
   server.on("/ping", HTTP_POST, handlePing);
   server.on("/query", handleQuery);
   server.on("/flight", handleFlightMode);
@@ -233,6 +244,14 @@ void setup() {
 }
 
 void loop() {
+  unsigned long loopNow = millis();
+  unsigned long loopGap = loopNow - loopPerfLastTickMs;
+  loopPerfLastTickMs = loopNow;
+  loopPerfIterations++;
+  if (loopGap > loopPerfMaxGapMs) {
+    loopPerfMaxGapMs = loopGap;
+  }
+
   // 处理配网门户DNS劫持
   processWiFiConfigPortalDns();
 
@@ -250,6 +269,12 @@ void loop() {
 
   // 检查长短信超时
   checkConcatTimeout();
+
+  if (perfAutoReportAtMs != 0 && (long)(millis() - perfAutoReportAtMs) >= 0) {
+    Serial.println("[Perf] Auto report");
+    printSerialConsolePerf();
+    perfAutoReportAtMs = 0;
+  }
 
   // USB 串口命令台：本机诊断命令由 ESP32 处理，AT... 按整行转发给模组
   handleUsbSerialConsole();

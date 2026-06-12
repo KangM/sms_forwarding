@@ -17,6 +17,18 @@ enum PushType {
   PUSH_TYPE_TELEGRAM = 10  // Telegram Bot
 };
 
+enum PushFilterTarget {
+  PUSH_FILTER_TARGET_SENDER = 0,
+  PUSH_FILTER_TARGET_MESSAGE = 1
+};
+
+enum PushFilterMode {
+  PUSH_FILTER_MODE_CONTAINS = 0,
+  PUSH_FILTER_MODE_NOT_CONTAINS = 1,
+  PUSH_FILTER_MODE_STARTS_WITH = 2,
+  PUSH_FILTER_MODE_ENDS_WITH = 3
+};
+
 // 最大推送通道数
 #define MAX_PUSH_CHANNELS 5
 
@@ -41,6 +53,10 @@ struct Config {
   bool startupMailEnabled;  // 启动后是否发送启动通知邮件
   String adminPhone;
   PushChannel pushChannels[MAX_PUSH_CHANNELS];  // 多推送通道
+  bool pushFilterEnabled;             // 推送过滤开关
+  PushFilterTarget pushFilterTarget;  // 匹配对象
+  PushFilterMode pushFilterMode;      // 匹配方式
+  String pushFilterExpr;              // 过滤表达式
   String webUser;      // Web管理账号
   String webPass;      // Web管理密码
   String numberBlackList;  // 号码黑名单（换行符分隔）

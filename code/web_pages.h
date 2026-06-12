@@ -46,6 +46,16 @@ const char* htmlPage = R"rawliteral(
     .push-channel-body { display: none; }
     .push-channel.enabled .push-channel-body { display: block; }
     .push-type-hint { font-size: 11px; color: #666; margin-top: 5px; padding: 8px; background: #f0f0f0; border-radius: 3px; }
+    .filter-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .filter-row .form-group { flex: 1; min-width: 180px; }
+    .filter-modal-mask { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 1000; padding: 20px; box-sizing: border-box; }
+    .filter-modal { max-width: 520px; margin: 8vh auto 0; background: white; padding: 18px; border-radius: 8px; box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+    .filter-modal-actions { display: flex; gap: 10px; }
+    .filter-modal-actions button { flex: 1; }
+    .filter-result { display: none; margin-top: 10px; padding: 10px; border-radius: 5px; font-size: 14px; }
+    .filter-pass { background: #e8f5e9; border-left: 4px solid #4CAF50; color: #2e7d32; }
+    .filter-block { background: #fff3e0; border-left: 4px solid #FF9800; color: #e65100; }
+    .filter-invalid { background: #ffebee; border-left: 4px solid #f44336; color: #c62828; }
   </style>
 </head>
 <body>
@@ -109,6 +119,39 @@ const char* htmlPage = R"rawliteral(
         <div class="section-title">🔗 HTTP推送通道设置</div>
         <div class="hint" style="margin-bottom:15px;">可同时启用多个推送通道，每个通道独立配置。支持POST JSON、Bark、GET、钉钉、PushPlus、Server酱等多种方式。</div>
 
+        <div class="push-channel enabled">
+          <div class="push-channel-header">
+            <input type="checkbox" name="pushFilterEnabled" id="pushFilterEnabled" %PUSH_FILTER_CHECKED%>
+            <label for="pushFilterEnabled" class="label-inline">启用推送过滤（匹配才推送）</label>
+          </div>
+          <div class="push-channel-body">
+            <div class="filter-row">
+              <div class="form-group">
+                <label>匹配对象</label>
+                <select name="pushFilterTarget" id="pushFilterTarget">
+                  <option value="sender"%PUSH_FILTER_TARGET_SENDER_SEL%>发信号码</option>
+                  <option value="message"%PUSH_FILTER_TARGET_MESSAGE_SEL%>短信内容</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>匹配方式</label>
+                <select name="pushFilterMode" id="pushFilterMode">
+                  <option value="contains"%PUSH_FILTER_MODE_CONTAINS_SEL%>包含</option>
+                  <option value="not_contains"%PUSH_FILTER_MODE_NOT_CONTAINS_SEL%>不包含</option>
+                  <option value="starts_with"%PUSH_FILTER_MODE_STARTS_WITH_SEL%>开头</option>
+                  <option value="ends_with"%PUSH_FILTER_MODE_ENDS_WITH_SEL%>结尾</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>过滤内容</label>
+              <input type="text" name="pushFilterExpr" id="pushFilterExpr" value="%PUSH_FILTER_EXPR%" placeholder="例如：A&&B 或 A||B">
+              <div class="hint">支持 && 或 ||，不能混用；空内容等价于不过滤。</div>
+            </div>
+            <button type="button" class="btn-send" onclick="openPushFilterTest()">测试规则</button>
+          </div>
+        </div>
+
         %PUSH_CHANNELS%
       </div>
 
@@ -165,6 +208,26 @@ const char* htmlPage = R"rawliteral(
       <button type="submit">💾 保存配置</button>
     </form>
   </div>
+
+  <div class="filter-modal-mask" id="pushFilterModal">
+    <div class="filter-modal">
+      <div class="section-title">测试推送过滤规则</div>
+      <div class="form-group">
+        <label>发信号码</label>
+        <input type="text" id="filterTestSender" placeholder="例如：10086">
+      </div>
+      <div class="form-group">
+        <label>短信内容</label>
+        <textarea id="filterTestMessage" rows="5" placeholder="粘贴一段短信内容进行测试"></textarea>
+      </div>
+      <div class="filter-modal-actions">
+        <button type="button" class="btn-send" onclick="runPushFilterTest()">测试</button>
+        <button type="button" style="background:#607D8B;" onclick="closePushFilterTest()">关闭</button>
+      </div>
+      <div class="filter-result" id="filterTestResult"></div>
+    </div>
+  </div>
+
   <script>
     function toggleChannel(idx) {
       var ch = document.getElementById('channel' + idx);
@@ -238,6 +301,58 @@ const char* htmlPage = R"rawliteral(
         document.getElementById('key2label' + idx).innerText = 'Bot Token';
         document.getElementById('key2' + idx).placeholder = '12345678:ABC...';
       }
+    }
+    function openPushFilterTest() {
+      document.getElementById('filterTestResult').style.display = 'none';
+      document.getElementById('pushFilterModal').style.display = 'block';
+    }
+    function closePushFilterTest() {
+      document.getElementById('pushFilterModal').style.display = 'none';
+    }
+    function runPushFilterTest() {
+      var result = document.getElementById('filterTestResult');
+      result.className = 'filter-result';
+      result.style.display = 'block';
+      result.textContent = '正在测试...';
+
+      var params = new URLSearchParams();
+      params.append('enabled', document.getElementById('pushFilterEnabled').checked ? 'on' : 'off');
+      params.append('target', document.getElementById('pushFilterTarget').value);
+      params.append('mode', document.getElementById('pushFilterMode').value);
+      params.append('expr', document.getElementById('pushFilterExpr').value);
+      params.append('sender', document.getElementById('filterTestSender').value);
+      params.append('message', document.getElementById('filterTestMessage').value);
+
+      fetch('/pushfiltertest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString()
+      })
+        .then(response => response.json())
+        .then(data => {
+          var targetLabel = data.target === 'sender' ? '发信号码' : '短信内容';
+          var modeLabels = {
+            contains: '包含',
+            not_contains: '不包含',
+            starts_with: '开头',
+            ends_with: '结尾'
+          };
+          var modeLabel = modeLabels[data.mode] || data.mode;
+          if (!data.success) {
+            result.className = 'filter-result filter-invalid';
+            result.textContent = '规则非法：' + data.message;
+          } else if (data.allowed) {
+            result.className = 'filter-result filter-pass';
+            result.textContent = '会转发：' + data.message + '（对象：' + targetLabel + '，方式：' + modeLabel + '，内容：' + data.expr + '）';
+          } else {
+            result.className = 'filter-result filter-block';
+            result.textContent = '不会转发：' + data.message + '（对象：' + targetLabel + '，方式：' + modeLabel + '，内容：' + data.expr + '）';
+          }
+        })
+        .catch(error => {
+          result.className = 'filter-result filter-invalid';
+          result.textContent = '请求失败：' + error;
+        });
     }
     document.addEventListener('DOMContentLoaded', function() {
       for (var i = 0; i < 5; i++) {
@@ -378,13 +493,13 @@ const char* htmlToolsPage = R"rawliteral(
       <div class="form-group">
         <label>显示数量</label>
         <select id="smsListLimit">
-          <option value="20" selected>前 20 条</option>
-          <option value="50">前 50 条</option>
-          <option value="100">前 100 条</option>
+          <option value="20" selected>最新 20 条</option>
+          <option value="50">最新 50 条</option>
+          <option value="100">最新 100 条</option>
         </select>
       </div>
       <button type="button" class="btn-info" id="smsListBtn" onclick="loadSmsList()">查看短信列表</button>
-      <div class="hint">先扫描索引，再用 CMGR 逐条读取，避免 CMGL 批量PDU过长导致截断。</div>
+      <div class="hint">先扫描全部索引，仅保留最新一批，再用 CMGR 逐条读取，避免 CMGL 批量PDU过长导致截断。</div>
       <div class="result-box" id="smsListResult"></div>
     </div>
 
@@ -693,9 +808,9 @@ const char* htmlToolsPage = R"rawliteral(
         "</div><div class='sms-body'>" + htmlEscapeClient(text || '(空短信)') + '</div></div>';
     }
 
-    function renderDecodedSms(storageHtml, limit, entries, decodedItems) {
+    function renderDecodedSms(storageHtml, limit, scanned, entries, decodedItems) {
       var html = storageHtml || '';
-      html += '<div>本次显示前 ' + limit + ' 条，实际读取 ' + entries.length + ' 条。内容由浏览器逐条解析。</div>';
+      html += '<div>本次扫描到 ' + (scanned || entries.length) + ' 条，显示最新 ' + limit + ' 条，实际读取 ' + entries.length + ' 条。内容由浏览器逐条解析。</div>';
       if (!entries.length) return html + '模块短信存储中没有短信。';
 
       var groups = {};
@@ -758,7 +873,7 @@ const char* htmlToolsPage = R"rawliteral(
       btn.textContent = '正在读取...';
       result.className = 'result-box result-loading';
       result.style.display = 'block';
-      result.textContent = '正在读取前 ' + limit + ' 条短信，请稍候...';
+      result.textContent = '正在读取最新 ' + limit + ' 条短信，请稍候...';
 
       try {
         var listResp = await fetch('/smslist?limit=' + encodeURIComponent(limit));
@@ -780,7 +895,7 @@ const char* htmlToolsPage = R"rawliteral(
         }
 
         result.className = 'result-box result-info';
-        result.innerHTML = renderDecodedSms(listData.storageHtml, listData.limit, listData.entries, decodedItems);
+        result.innerHTML = renderDecodedSms(listData.storageHtml, listData.limit, listData.scanned, listData.entries, decodedItems);
       } catch (error) {
         result.className = 'result-box result-error';
         result.textContent = '请求失败: ' + error;

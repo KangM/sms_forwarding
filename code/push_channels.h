@@ -4,6 +4,7 @@
 void sendSMSToServer(const char* sender, const char* message, const char* timestamp);
 
 #include "encoding_utils.h"
+#include "push_filter.h"
 
 // 发送单个推送通道
 #include "push_debug.h"
@@ -270,6 +271,17 @@ bool sendToChannel(const PushChannel& channel, const char* sender, const char* m
 void sendSMSToServer(const char* sender, const char* message, const char* timestamp) {
   Serial.println("[Push] 准备推送，发送者=" + String(sender));
   appendPushDebugLog("准备推送短信，发送者=" + String(sender) + "，时间=" + String(timestamp));
+
+  PushFilterEvalResult filterResult = evaluatePushFilter(currentPushFilterRule(), String(sender), String(message));
+  if (!filterResult.valid || !filterResult.allowed) {
+    Serial.println("[Push] 过滤取消：" + filterResult.reason);
+    appendPushDebugLog("推送过滤取消：" + filterResult.reason +
+                       "，对象=" + filterResult.targetName +
+                       "，方式=" + filterResult.modeName +
+                       "，内容=" + filterResult.expr);
+    return;
+  }
+
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[Push] 取消：WiFi未连接(status=" + String((int)WiFi.status()) + ")");
     appendPushDebugLog("推送取消：WiFi未连接，状态=" + wifiStatusText(WiFi.status()));
