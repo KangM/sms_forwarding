@@ -14,8 +14,17 @@ void handleRoot() {
   html.replace("%SMTP_USER%", config.smtpUser);
   html.replace("%SMTP_PASS%", config.smtpPass);
   html.replace("%SMTP_SEND_TO%", config.smtpSendTo);
+  html.replace("%STARTUP_MAIL_CHECKED%", config.startupMailEnabled ? "checked" : "");
   html.replace("%ADMIN_PHONE%", config.adminPhone);
   html.replace("%NUMBER_BLACK_LIST%", config.numberBlackList);
+
+  // 掉线检测配置
+  html.replace("%KA_CHECKED%", config.keepAliveEnabled ? "checked" : "");
+  html.replace("%KA_URL%", config.keepAliveUrl);
+  html.replace("%KA_METHOD_GET_SEL%", config.keepAliveMethod == "POST" ? "" : " selected");
+  html.replace("%KA_METHOD_POST_SEL%", config.keepAliveMethod == "POST" ? " selected" : "");
+  html.replace("%KA_BODY%", config.keepAliveBody);
+  html.replace("%KA_INTERVAL%", String(config.keepAliveInterval));
 
   // 生成推送通道HTML
   String channelsHtml = "";

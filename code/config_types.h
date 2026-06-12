@@ -38,12 +38,24 @@ struct Config {
   String smtpUser;
   String smtpPass;
   String smtpSendTo;
+  bool startupMailEnabled;  // 启动后是否发送启动通知邮件
   String adminPhone;
   PushChannel pushChannels[MAX_PUSH_CHANNELS];  // 多推送通道
   String webUser;      // Web管理账号
   String webPass;      // Web管理密码
   String numberBlackList;  // 号码黑名单（换行符分隔）
+  // 掉线检测配置
+  bool keepAliveEnabled;     // 功能开关（默认关）
+  String keepAliveUrl;       // 请求URL
+  String keepAliveMethod;    // 请求方式（GET/POST，默认GET）
+  String keepAliveBody;      // 请求内容（POST时使用）
+  int keepAliveInterval;     // 间隔时间（秒，默认5）
 };
+
+// 持续请求最小间隔（秒），防止误填过小值刷爆请求
+#define KEEP_ALIVE_MIN_INTERVAL 1
+// 持续请求默认间隔（秒）
+#define KEEP_ALIVE_DEFAULT_INTERVAL 5
 
 // 默认Web管理账号密码
 #define DEFAULT_WEB_USER "admin"

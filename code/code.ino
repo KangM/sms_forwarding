@@ -59,6 +59,8 @@ ConcatSms concatBuffer[MAX_CONCAT_MESSAGES];  // 长短信缓存
 
 #include "push_channels.h"
 
+#include "keep_alive.h"
+
 #include "sms_receive.h"
 
 #include "setup_helpers.h"
@@ -190,11 +192,13 @@ void setup() {
   digitalWrite(LED_BUILTIN, LOW);
 
   // 如果配置有效，发送启动邮件通知
-  if (wifiConnected && configValid) {
+  if (wifiConnected && configValid && config.startupMailEnabled) {
     Serial.println("配置有效，发送启动邮件通知...");
     String subject = "短信转发器已启动";
     String body = "设备已启动\n设备地址: " + getDeviceUrl();
     sendEmailNotification(subject.c_str(), body.c_str());
+  } else if (wifiConnected && configValid && !config.startupMailEnabled) {
+    Serial.println("启动通知开关已关闭，跳过启动邮件通知");
   } else if (!wifiConnected) {
     Serial.println("WiFi未连接，跳过启动邮件通知");
   }
@@ -209,6 +213,9 @@ void loop() {
 
   // 检查长短信超时
   checkConcatTimeout();
+
+  // 掉线检测
+  handleKeepAlive();
 
   // 本地透传
   if (Serial.available()) Serial1.write(Serial.read());

@@ -24,6 +24,15 @@ const char* htmlPage = R"rawliteral(
     .btn-send:hover { background: #1976D2; }
     .section { border: 1px solid #ddd; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
     .section-title { font-size: 18px; color: #333; margin-bottom: 10px; }
+    .section-title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .section-title-row .section-title { margin-bottom: 0; }
+    .switch { position: relative; display: inline-block; width: 46px; height: 24px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .2s; border-radius: 24px; }
+    .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .2s; border-radius: 50%; }
+    .switch input:checked + .slider { background-color: #4CAF50; }
+    .switch input:checked + .slider:before { transform: translateX(22px); }
+    .switch-label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #666; font-weight: normal; }
     .status { padding: 10px; background: #e7f3fe; border-left: 4px solid #2196F3; margin-bottom: 20px; }
     .warning { padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107; margin-bottom: 20px; font-size: 12px; }
     .hint { font-size: 12px; color: #888; }
@@ -64,7 +73,16 @@ const char* htmlPage = R"rawliteral(
       </div>
 
       <div class="section">
-        <div class="section-title">📧 邮件通知设置</div>
+        <div class="section-title-row">
+          <div class="section-title">📧 邮件通知设置</div>
+          <label class="switch-label">
+            <span>设备启动时自动发送</span>
+            <span class="switch">
+              <input type="checkbox" name="startupMail" %STARTUP_MAIL_CHECKED%>
+              <span class="slider"></span>
+            </span>
+          </label>
+        </div>
         <div class="form-group">
           <label>SMTP服务器</label>
           <input type="text" name="smtpServer" value="%SMTP_SERVER%" placeholder="smtp.qq.com">
@@ -99,6 +117,39 @@ const char* htmlPage = R"rawliteral(
         <div class="form-group">
           <label>管理员手机号</label>
           <input type="text" name="adminPhone" value="%ADMIN_PHONE%" placeholder="13800138000">
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title-row">
+          <div class="section-title">🔁 掉线检测</div>
+          <label class="switch-label">
+            <span>开关</span>
+            <span class="switch">
+              <input type="checkbox" name="kaEnabled" %KA_CHECKED%>
+              <span class="slider"></span>
+            </span>
+          </label>
+        </div>
+        <div class="hint" style="margin-bottom:15px;">开启后通过WiFi按固定间隔向指定URL发起请求，用于掉线检测。</div>
+        <div class="form-group">
+          <label>请求URL</label>
+          <input type="text" name="kaUrl" value="%KA_URL%" placeholder="http://your-server.com/keepalive">
+        </div>
+        <div class="form-group">
+          <label>请求方式</label>
+          <select name="kaMethod">
+            <option value="GET"%KA_METHOD_GET_SEL%>GET</option>
+            <option value="POST"%KA_METHOD_POST_SEL%>POST</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>请求内容（POST时作为请求体，Content-Type: application/json）</label>
+          <textarea name="kaBody" rows="3" style="font-family:monospace;">%KA_BODY%</textarea>
+        </div>
+        <div class="form-group">
+          <label>间隔时间（秒）</label>
+          <input type="number" name="kaInterval" value="%KA_INTERVAL%" min="1" placeholder="5">
         </div>
       </div>
 
@@ -279,9 +330,9 @@ const char* htmlToolsPage = R"rawliteral(
       </div>
     </form>
 
-    <div class="section">
-      <div class="section-title">📊 模组信息查询</div>
-      <div class="btn-group">
+    <details class="section" id="modulePanel">
+      <summary class="section-title" style="cursor:pointer;">📊 模组信息与控制</summary>
+      <div class="btn-group" style="margin-top:10px;">
         <button type="button" class="btn-query" onclick="queryInfo('ati')">📋 固件信息</button>
         <button type="button" class="btn-query" onclick="queryInfo('signal')">📶 信号质量</button>
       </div>
@@ -289,11 +340,22 @@ const char* htmlToolsPage = R"rawliteral(
         <button type="button" class="btn-info" onclick="queryInfo('siminfo')">💳 SIM卡信息</button>
         <button type="button" class="btn-info" onclick="queryInfo('network')">🌍 网络状态</button>
       </div>
+      <div class="result-box" id="queryResult"></div>
+      <div class="btn-group" style="margin-top:10px;">
+        <button type="button" id="flightBtn" onclick="toggleFlightMode()" style="background:#E91E63;">✈️ 切换飞行模式</button>
+        <button type="button" onclick="queryFlightMode()" style="background:#9C27B0;">🔍 查询飞行状态</button>
+      </div>
+      <div class="hint">飞行模式关闭时模组可正常收发短信，开启后将关闭射频无法使用移动网络</div>
+      <div class="result-box" id="flightResult"></div>
+    </details>
+
+    <div class="section">
+      <div class="section-title">📡 WiFi 管理</div>
       <div class="btn-group">
         <button type="button" class="btn-info" onclick="queryInfo('wifi')" style="background:#00BCD4;">📡 WiFi状态</button>
         <button type="button" class="btn-info" onclick="clearWiFiConfig()" style="background:#795548;">清除WiFi记录</button>
       </div>
-      <div class="result-box" id="queryResult"></div>
+      <div class="result-box" id="wifiResult"></div>
     </div>
 
     <details class="section" id="pushDebugPanel">
@@ -328,19 +390,25 @@ const char* htmlToolsPage = R"rawliteral(
 
     <div class="section">
       <div class="section-title">🌐 网络测试</div>
-      <button type="button" class="btn-ping" id="pingBtn" onclick="confirmPing()">📡 点我消耗一点流量</button>
-      <div class="hint">将向 8.8.8.8 进行 ping 操作，一次性消耗极少流量费用</div>
-      <div class="result-box" id="pingResult"></div>
-    </div>
-
-    <div class="section">
-      <div class="section-title">✈️ 模组控制</div>
-      <div class="btn-group">
-        <button type="button" id="flightBtn" onclick="toggleFlightMode()" style="background:#E91E63;">✈️ 切换飞行模式</button>
-        <button type="button" onclick="queryFlightMode()" style="background:#9C27B0;">🔍 查询状态</button>
+      <div class="form-group">
+        <label>Ping 目标</label>
+        <input type="text" id="pingUrl" placeholder="不填默认 8.8.8.8">
       </div>
-      <div class="hint">飞行模式关闭时模组可正常收发短信，开启后将关闭射频无法使用移动网络</div>
-      <div class="result-box" id="flightResult"></div>
+      <div class="form-group">
+        <label>包大小</label>
+        <select id="pingSize">
+          <option value="" selected>模组默认</option>
+          <option value="32">32 字节</option>
+          <option value="64">64 字节</option>
+          <option value="128">128 字节</option>
+          <option value="256">256 字节</option>
+          <option value="512">512 字节</option>
+          <option value="1024">1024 字节</option>
+        </select>
+      </div>
+      <button type="button" class="btn-ping" id="pingBtn" onclick="confirmPing()">📡 点我消耗一点流量</button>
+      <div class="hint">不填则向 8.8.8.8 发送默认大小的 ping，一次性消耗极少流量费用</div>
+      <div class="result-box" id="pingResult"></div>
     </div>
 
     <div class="section">
@@ -362,7 +430,7 @@ const char* htmlToolsPage = R"rawliteral(
     }
 
     function queryInfo(type) {
-      var result = document.getElementById('queryResult');
+      var result = document.getElementById(type === 'wifi' ? 'wifiResult' : 'queryResult');
       result.className = 'result-box result-loading';
       result.style.display = 'block';
       result.textContent = '正在查询，请稍候...';
@@ -731,6 +799,8 @@ const char* htmlToolsPage = R"rawliteral(
     function doPing() {
       var btn = document.getElementById('pingBtn');
       var result = document.getElementById('pingResult');
+      var url = (document.getElementById('pingUrl').value || '').trim();
+      var size = (document.getElementById('pingSize').value || '').trim();
 
       btn.disabled = true;
       btn.textContent = '⏳ 正在 Ping...';
@@ -738,7 +808,12 @@ const char* htmlToolsPage = R"rawliteral(
       result.style.display = 'block';
       result.textContent = '正在执行 Ping 操作，请稍候（最长等待30秒）...';
 
-      fetch('/ping', { method: 'POST' })
+      var params = [];
+      if (url) params.push('host=' + encodeURIComponent(url));
+      if (size) params.push('size=' + encodeURIComponent(size));
+      var query = params.length ? '?' + params.join('&') : '';
+
+      fetch('/ping' + query, { method: 'POST' })
         .then(response => response.json())
         .then(data => {
           btn.disabled = false;

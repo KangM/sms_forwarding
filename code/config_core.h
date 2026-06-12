@@ -11,10 +11,18 @@ void saveConfig() {
   preferences.putString("smtpUser", config.smtpUser);
   preferences.putString("smtpPass", config.smtpPass);
   preferences.putString("smtpSendTo", config.smtpSendTo);
+  preferences.putBool("startupMail", config.startupMailEnabled);
   preferences.putString("adminPhone", config.adminPhone);
   preferences.putString("webUser", config.webUser);
   preferences.putString("webPass", config.webPass);
   preferences.putString("numBlkList", config.numberBlackList);
+
+  // 保存掉线检测配置
+  preferences.putBool("kaEn", config.keepAliveEnabled);
+  preferences.putString("kaUrl", config.keepAliveUrl);
+  preferences.putString("kaMethod", config.keepAliveMethod);
+  preferences.putString("kaBody", config.keepAliveBody);
+  preferences.putInt("kaInt", config.keepAliveInterval);
 
   // 保存推送通道配置
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
@@ -40,10 +48,21 @@ void loadConfig() {
   config.smtpUser = preferences.getString("smtpUser", "");
   config.smtpPass = preferences.getString("smtpPass", "");
   config.smtpSendTo = preferences.getString("smtpSendTo", "");
+  config.startupMailEnabled = preferences.getBool("startupMail", true);
   config.adminPhone = preferences.getString("adminPhone", "");
   config.webUser = preferences.getString("webUser", DEFAULT_WEB_USER);
   config.webPass = preferences.getString("webPass", DEFAULT_WEB_PASS);
   config.numberBlackList = preferences.getString("numBlkList", "");
+
+  // 加载掉线检测配置
+  config.keepAliveEnabled = preferences.getBool("kaEn", false);
+  config.keepAliveUrl = preferences.getString("kaUrl", "");
+  config.keepAliveMethod = preferences.getString("kaMethod", "GET");
+  config.keepAliveBody = preferences.getString("kaBody", "");
+  config.keepAliveInterval = preferences.getInt("kaInt", KEEP_ALIVE_DEFAULT_INTERVAL);
+  if (config.keepAliveInterval < KEEP_ALIVE_MIN_INTERVAL) {
+    config.keepAliveInterval = KEEP_ALIVE_DEFAULT_INTERVAL;
+  }
 
   // 加载推送通道配置
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {

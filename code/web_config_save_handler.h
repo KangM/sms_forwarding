@@ -21,8 +21,19 @@ void handleSave() {
   config.smtpUser = server.arg("smtpUser");
   config.smtpPass = server.arg("smtpPass");
   config.smtpSendTo = server.arg("smtpSendTo");
+  config.startupMailEnabled = server.arg("startupMail") == "on";
   config.adminPhone = server.arg("adminPhone");
   config.numberBlackList = server.arg("numberBlackList");
+
+  // 掉线检测配置
+  config.keepAliveEnabled = server.arg("kaEnabled") == "on";
+  config.keepAliveUrl = server.arg("kaUrl");
+  config.keepAliveMethod = server.arg("kaMethod") == "POST" ? "POST" : "GET";
+  config.keepAliveBody = server.arg("kaBody");
+  config.keepAliveInterval = server.arg("kaInterval").toInt();
+  if (config.keepAliveInterval < KEEP_ALIVE_MIN_INTERVAL) {
+    config.keepAliveInterval = KEEP_ALIVE_DEFAULT_INTERVAL;
+  }
 
   // 保存推送通道配置
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
