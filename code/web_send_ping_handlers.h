@@ -65,7 +65,17 @@ void handleSendSms() {
 void handlePing() {
   if (!checkAuth()) return;
 
-  Serial.println("网页端发起Ping请求");
+  // 读取可选的目标地址和包大小参数，未填则使用默认值
+  String host = server.arg("host");
+  host.trim();
+  if (host.length() == 0) host = "8.8.8.8";
+
+  String sizeArg = server.arg("size");
+  sizeArg.trim();
+  int packetSize = sizeArg.toInt();
+
+  Serial.println("网页端发起Ping请求, 目标: " + host +
+                 (packetSize > 0 ? (", 包大小: " + String(packetSize)) : ", 包大小: 默认"));
 
   // 清空串口缓冲区
   while (Serial1.available()) Serial1.read();
@@ -85,8 +95,12 @@ void handlePing() {
   while (Serial1.available()) Serial1.read();
   delay(500);  // 等待网络稳定
 
-  // 发送MPING命令，ping 8.8.8.8，超时30秒，ping 1次
-  Serial1.println("AT+MPING=\"8.8.8.8\",30,1");
+  // 发送MPING命令，目标地址超时30秒，ping 1次；可选追加包大小
+  String mpingCmd = "AT+MPING=\"" + host + "\",30,1";
+  if (packetSize > 0) {
+    mpingCmd += "," + String(packetSize);
+  }
+  Serial1.println(mpingCmd);
 
   // 等待响应
   unsigned long start = millis();
