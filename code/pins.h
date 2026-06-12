@@ -1,6 +1,11 @@
 #pragma once
 
 // Build with -DSMS_BOARD_C3 or -DSMS_BOARD_S3.
+// Arduino IDE users get the current default board without extra build flags.
+#if !defined(SMS_BOARD_C3) && !defined(SMS_BOARD_S3)
+#define SMS_BOARD_S3
+#endif
+
 #if defined(SMS_BOARD_C3)
 // ESP32-C3 SuperMini UART and modem control pins.
 #define TXD 3
@@ -21,6 +26,4 @@
 #define LED_BUILTIN 48
 #endif
 
-#else
-#error "Please define SMS_BOARD_C3 or SMS_BOARD_S3"
 #endif

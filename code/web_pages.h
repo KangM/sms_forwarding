@@ -213,7 +213,7 @@ const char* htmlToolsPage = R"rawliteral(
     h1 { color: #333; text-align: center; }
     .form-group { margin-bottom: 15px; }
     label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
-    input[type="text"], textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; box-sizing: border-box; }
+    input[type="text"], textarea, select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; box-sizing: border-box; background: white; }
     textarea { resize: vertical; min-height: 100px; }
     button { width: 100%; padding: 12px; background: #2196F3; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; margin-top: 10px; }
     button:hover { background: #1976D2; }
@@ -313,8 +313,16 @@ const char* htmlToolsPage = R"rawliteral(
 
     <div class="section">
       <div class="section-title">短信列表</div>
-      <button type="button" class="btn-info" id="smsListBtn" onclick="loadSmsList()">查看所有短信</button>
-      <div class="hint">从模块短信存储读取，显示已读/未读、收信时间、发信人、内容和存储空间。</div>
+      <div class="form-group">
+        <label>显示数量</label>
+        <select id="smsListLimit">
+          <option value="20" selected>前 20 条</option>
+          <option value="50">前 50 条</option>
+          <option value="100">前 100 条</option>
+        </select>
+      </div>
+      <button type="button" class="btn-info" id="smsListBtn" onclick="loadSmsList()">查看短信列表</button>
+      <div class="hint">先扫描索引，再用 CMGR 逐条读取，避免 CMGL 批量PDU过长导致截断。</div>
       <div class="result-box" id="smsListResult"></div>
     </div>
 
@@ -440,35 +448,279 @@ const char* htmlToolsPage = R"rawliteral(
         });
     }
 
-    function loadSmsList() {
+    function smsStatusText(status) {
+      if (status === 0) return '未读';
+      if (status === 1) return '已读';
+      if (status === 2) return '未发送';
+      if (status === 3) return '已发送';
+      return '未知';
+    }
+
+    function smsStatusClass(status) {
+      return status === 0 ? 'sms-unread' : 'sms-read';
+    }
+
+    function htmlEscapeClient(text) {
+      return String(text == null ? '' : text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function cleanPduHex(pdu) {
+      var hex = String(pdu || '').replace(/[^0-9a-fA-F]/g, '').toUpperCase();
+      if (hex.length % 2) throw new Error('PDU长度不是偶数');
+      return hex;
+    }
+
+    function pduByte(pdu, offset) {
+      if (offset + 2 > pdu.length) throw new Error('PDU偏移越界: ' + offset);
+      return parseInt(pdu.substr(offset, 2), 16);
+    }
+
+    function swapBcd(hex, maxDigits) {
+      var out = '';
+      for (var i = 0; i < hex.length; i += 2) {
+        out += hex.charAt(i + 1) + hex.charAt(i);
+      }
+      out = out.replace(/F/gi, '');
+      return maxDigits == null ? out : out.slice(0, maxDigits);
+    }
+
+    var GSM7_DEFAULT = '@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ' +
+      "\\x1bÆæßÉ !\\\"#¤%&'()*+,-./" +
+      '0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§' +
+      '¿abcdefghijklmnopqrstuvwxyzäöñüà';
+    var GSM7_EXT = {10:'\f',20:'^',40:'{',41:'}',47:'\\',60:'[',61:'~',62:']',64:'|',101:'€'};
+
+    function unpackGsm7(hex, septetCount, skipBits) {
+      var bytes = [];
+      for (var i = 0; i < hex.length; i += 2) bytes.push(parseInt(hex.substr(i, 2), 16));
+      var out = '';
+      var esc = false;
+      skipBits = skipBits || 0;
+      for (var s = 0; s < septetCount; s++) {
+        var bit = skipBits + s * 7;
+        var val = 0;
+        for (var b = 0; b < 7; b++) {
+          var absolute = bit + b;
+          var byteIndex = Math.floor(absolute / 8);
+          if (byteIndex >= bytes.length) break;
+          if (bytes[byteIndex] & (1 << (absolute % 8))) val |= (1 << b);
+        }
+        if (esc) {
+          out += GSM7_EXT[val] || '�';
+          esc = false;
+        } else if (val === 0x1B) {
+          esc = true;
+        } else {
+          out += GSM7_DEFAULT.charAt(val) || '�';
+        }
+      }
+      return out;
+    }
+
+    function decodeUcs2(hex) {
+      var out = '';
+      for (var i = 0; i + 3 < hex.length; i += 4) {
+        out += String.fromCharCode(parseInt(hex.substr(i, 4), 16));
+      }
+      return out;
+    }
+
+    function decodePduAddress(pdu, offset, lengthType) {
+      var length = pduByte(pdu, offset);
+      if (lengthType === 'octets' && length === 0) {
+        return { text: '', next: offset + 2, type: 0, ton: 0 };
+      }
+      var addressLength = lengthType === 'nibbles' ? length : (length - 1) * 2;
+      var type = pduByte(pdu, offset + 2);
+      var ton = (type & 0x70) >> 4;
+      var start = offset + 4;
+      var paddedLength = addressLength + (addressLength & 1);
+      var raw = pdu.substr(start, paddedLength);
+      var text = '';
+      if ((type & 0x80) !== 0) {
+        if (ton === 0 || ton === 1 || ton === 2) {
+          text = (ton === 1 ? '+' : '') + swapBcd(raw, addressLength);
+        } else if (ton === 5) {
+          text = unpackGsm7(raw, Math.floor(addressLength * 4 / 7), 0);
+        }
+      }
+      return { text: text, next: start + paddedLength, type: type, ton: ton };
+    }
+
+    function decodePduTimestamp(pdu, offset) {
+      var parts = [];
+      for (var i = 0; i < 7; i++) parts.push(swapBcd(pdu.substr(offset + i * 2, 2)));
+      return '20' + parts[0] + '-' + parts[1] + '-' + parts[2] + ' ' + parts[3] + ':' + parts[4] + ':' + parts[5];
+    }
+
+    function decodeSmsDeliverPdu(input) {
+      var pdu = cleanPduHex(input);
+      var pos = 0;
+      var sca = decodePduAddress(pdu, pos, 'octets');
+      pos = sca.next;
+      var first = pduByte(pdu, pos);
+      var udhi = (first & 0x40) !== 0;
+      pos += 2;
+      var sender = decodePduAddress(pdu, pos, 'nibbles');
+      pos = sender.next;
+      var pid = pduByte(pdu, pos); pos += 2;
+      var dcs = pduByte(pdu, pos); pos += 2;
+      var timestamp = decodePduTimestamp(pdu, pos); pos += 14;
+      var udl = pduByte(pdu, pos); pos += 2;
+      var bodyStart = pos;
+      var concat = null;
+      var text = '';
+
+      if (udhi) {
+        var udhl = pduByte(pdu, pos);
+        var headerStart = pos + 2;
+        var header = pdu.substr(headerStart, udhl * 2);
+        if (header.length >= 10 && header.substr(0, 2) === '00' && header.substr(2, 2) === '03') {
+          concat = {
+            ref: parseInt(header.substr(4, 2), 16),
+            total: parseInt(header.substr(6, 2), 16),
+            part: parseInt(header.substr(8, 2), 16)
+          };
+        } else if (header.length >= 12 && header.substr(0, 2) === '08' && header.substr(2, 2) === '04') {
+          concat = {
+            ref: parseInt(header.substr(4, 4), 16),
+            total: parseInt(header.substr(8, 2), 16),
+            part: parseInt(header.substr(10, 2), 16)
+          };
+        }
+        bodyStart = pos + (udhl + 1) * 2;
+        if ((dcs & 0x0C) === 0x08) {
+          var ucsOctets = Math.max(0, udl - (udhl + 1));
+          text = decodeUcs2(pdu.substr(bodyStart, ucsOctets * 2));
+        } else if ((dcs & 0x0C) === 0x00) {
+          var headerSeptets = Math.ceil(((udhl + 1) * 8) / 7);
+          var septets = Math.max(0, udl - headerSeptets);
+          var skipBits = ((udhl + 1) * 8) % 7;
+          text = unpackGsm7(pdu.substr(bodyStart), septets, skipBits);
+        } else {
+          text = '[暂不支持的DCS 0x' + dcs.toString(16).toUpperCase() + ']';
+        }
+      } else if ((dcs & 0x0C) === 0x08) {
+        text = decodeUcs2(pdu.substr(bodyStart, udl * 2));
+      } else if ((dcs & 0x0C) === 0x00) {
+        text = unpackGsm7(pdu.substr(bodyStart), udl, 0);
+      } else {
+        text = '[暂不支持的DCS 0x' + dcs.toString(16).toUpperCase() + ']';
+      }
+
+      return { sender: sender.text, timestamp: timestamp, text: text, concat: concat, dcs: dcs, pid: pid };
+    }
+
+    function smsCard(indexLabel, status, sender, timestamp, text) {
+      return "<div class='sms-card'><div class='sms-meta'>" +
+        "<span class='sms-badge " + smsStatusClass(status) + "'>" + smsStatusText(status) + "</span>" +
+        '索引: ' + htmlEscapeClient(indexLabel) +
+        ' | 收信时间: ' + htmlEscapeClient(timestamp || '-') +
+        ' | 发信人: ' + htmlEscapeClient(sender || '-') +
+        "</div><div class='sms-body'>" + htmlEscapeClient(text || '(空短信)') + '</div></div>';
+    }
+
+    function renderDecodedSms(storageHtml, limit, entries, decodedItems) {
+      var html = storageHtml || '';
+      html += '<div>本次显示前 ' + limit + ' 条，实际读取 ' + entries.length + ' 条。内容由浏览器逐条解析。</div>';
+      if (!entries.length) return html + '模块短信存储中没有短信。';
+
+      var groups = {};
+      var order = [];
+      decodedItems.forEach(function(item) {
+        if (!item.decoded || !item.decoded.concat || item.decoded.concat.total <= 1) {
+          order.push({ type: 'single', item: item });
+          return;
+        }
+        var c = item.decoded.concat;
+        var key = item.decoded.sender + '|' + c.ref + '|' + c.total;
+        if (!groups[key]) {
+          groups[key] = {
+            sender: item.decoded.sender,
+            timestamp: item.decoded.timestamp,
+            status: item.entry.status,
+            indexes: [],
+            total: c.total,
+            parts: {}
+          };
+          order.push({ type: 'group', key: key });
+        }
+        groups[key].indexes.push(item.entry.index);
+        if (item.entry.status === 0) groups[key].status = 0;
+        groups[key].parts[c.part] = item.decoded.text;
+      });
+
+      order.forEach(function(row) {
+        if (row.type === 'single') {
+          var item = row.item;
+          if (item.decoded) {
+            html += smsCard(String(item.entry.index), item.entry.status, item.decoded.sender, item.decoded.timestamp, item.decoded.text);
+          } else {
+            html += smsCard(String(item.entry.index), item.entry.status, '-', '-', item.error || '读取失败');
+          }
+        } else {
+          var g = groups[row.key];
+          var text = '';
+          var received = 0;
+          for (var i = 1; i <= g.total; i++) {
+            if (g.parts[i] != null) {
+              text += g.parts[i];
+              received++;
+            } else {
+              text += '[缺失分段' + i + ']';
+            }
+          }
+          if (received < g.total) text = '[长短信未收齐 ' + received + '/' + g.total + '] ' + text;
+          html += smsCard(g.indexes.join(','), g.status, g.sender, g.timestamp, text);
+        }
+      });
+      return html;
+    }
+
+    window.loadSmsList = async function loadSmsList() {
       var btn = document.getElementById('smsListBtn');
       var result = document.getElementById('smsListResult');
+      var limit = document.getElementById('smsListLimit').value || '20';
       btn.disabled = true;
       btn.textContent = '正在读取...';
       result.className = 'result-box result-loading';
       result.style.display = 'block';
-      result.textContent = '正在读取短信列表，请稍候...';
+      result.textContent = '正在读取前 ' + limit + ' 条短信，请稍候...';
 
-      fetch('/smslist')
-        .then(response => response.json())
-        .then(data => {
-          if (data.success) {
-            result.className = 'result-box result-info';
-            result.innerHTML = data.message;
-          } else {
-            result.className = 'result-box result-error';
-            result.innerHTML = '读取失败<br>' + data.message;
+      try {
+        var listResp = await fetch('/smslist?limit=' + encodeURIComponent(limit));
+        var listData = await listResp.json();
+        if (!listData.success) throw new Error(listData.message || '索引读取失败');
+
+        var decodedItems = [];
+        for (var i = 0; i < listData.entries.length; i++) {
+          var entry = listData.entries[i];
+          result.textContent = '正在读取短信 ' + (i + 1) + '/' + listData.entries.length + '，索引 ' + entry.index + '...';
+          try {
+            var pduResp = await fetch('/smspdu?index=' + encodeURIComponent(entry.index));
+            var pduData = await pduResp.json();
+            if (!pduData.success) throw new Error(pduData.message || 'PDU读取失败');
+            decodedItems.push({ entry: entry, decoded: decodeSmsDeliverPdu(pduData.pdu) });
+          } catch (err) {
+            decodedItems.push({ entry: entry, error: err.message || String(err) });
           }
-        })
-        .catch(error => {
-          result.className = 'result-box result-error';
-          result.textContent = '请求失败: ' + error;
-        })
-        .finally(() => {
-          btn.disabled = false;
-          btn.textContent = '查看所有短信';
-        });
-    }
+        }
+
+        result.className = 'result-box result-info';
+        result.innerHTML = renderDecodedSms(listData.storageHtml, listData.limit, listData.entries, decodedItems);
+      } catch (error) {
+        result.className = 'result-box result-error';
+        result.textContent = '请求失败: ' + error;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '查看短信列表';
+      }
+    };
 
     function confirmPing() {
       if (confirm("确定要执行 Ping 操作吗？\n\n这将消耗少量流量。")) {

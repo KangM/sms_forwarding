@@ -68,6 +68,24 @@ bool isLikelyPduLine(const String& line) {
   return true;
 }
 
+struct SmsListEntry {
+  int index;
+  int status;
+  int tpduLength;
+};
+
+#define SMS_LIST_MAX_LIMIT 100
+
+static SmsListEntry smsListEntries[SMS_LIST_MAX_LIMIT];
+
+int getSmsListLimit() {
+  int limit = server.arg("limit").toInt();
+  if (limit <= 0) limit = 20;
+  if (limit < 1) limit = 1;
+  if (limit > SMS_LIST_MAX_LIMIT) limit = SMS_LIST_MAX_LIMIT;
+  return limit;
+}
+
 bool decodeStoredSmsPdu(const String& pduLine, String& sender, String& text, String& timestamp) {
   if (!pdu.decodePDU(pduLine.c_str())) return false;
   sender = String(pdu.getSender());
@@ -180,6 +198,23 @@ String assembleSmsListConcatText(const SmsListConcatGroup& group) {
   return text;
 }
 
+void resetSmsListConcatGroups(SmsListConcatGroup groups[]) {
+  for (int i = 0; i < MAX_SMS_LIST_CONCAT_GROUPS; i++) {
+    groups[i].inUse = false;
+    groups[i].refNumber = 0;
+    groups[i].sender = "";
+    groups[i].timestamp = "";
+    groups[i].totalParts = 0;
+    groups[i].receivedParts = 0;
+    groups[i].status = 1;
+    groups[i].indexes = "";
+    for (int j = 0; j < MAX_CONCAT_PARTS; j++) {
+      groups[i].parts[j] = "";
+      groups[i].partValid[j] = false;
+    }
+  }
+}
+
 void appendSmsListConcatGroups(String& html, SmsListConcatGroup groups[], int& count) {
   for (int i = 0; i < MAX_SMS_LIST_CONCAT_GROUPS; i++) {
     if (!groups[i].inUse) continue;
@@ -205,6 +240,117 @@ void collectSmsIndexFromCmgl(const String& resp, int indexes[], int& indexCount)
       }
       lineStart = i + 1;
     }
+  }
+}
+
+bool collectSmsEntriesFromCmgl(int limit, SmsListEntry entries[], int& entryCount) {
+  entryCount = 0;
+  while (Serial1.available()) Serial1.read();
+  Serial1.println("AT+CMGL=4");
+
+  unsigned long start = millis();
+  String line = "";
+  bool lineOverflow = false;
+
+  while (millis() - start < 15000) {
+    while (Serial1.available()) {
+      char c = Serial1.read();
+      if (c == '\r') continue;
+
+      if (c == '\n') {
+        line.trim();
+        if (line.length() > 0) {
+          if (line == "OK") {
+            Serial.println("CMGL索引扫描完成，数量: " + String(entryCount));
+            return true;
+          }
+          if (line.indexOf("ERROR") >= 0) {
+            Serial.println("CMGL索引扫描失败: " + line);
+            return false;
+          }
+          if (line.startsWith("+CMGL:") && entryCount < limit) {
+            entries[entryCount].index = getCsvField(line, 0).toInt();
+            entries[entryCount].status = getCsvField(line, 1).toInt();
+            entries[entryCount].tpduLength = getCsvField(line, 3).toInt();
+            if (entries[entryCount].index > 0) {
+              entryCount++;
+            }
+          }
+        }
+        line = "";
+        lineOverflow = false;
+      } else if (!lineOverflow) {
+        if (line.length() < SERIAL_BUFFER_SIZE - 1) {
+          line += c;
+        } else {
+          lineOverflow = true;
+          line = "";
+        }
+      }
+    }
+    delay(1);
+  }
+
+  Serial.println("CMGL索引扫描超时，已收集数量: " + String(entryCount));
+  return entryCount > 0;
+}
+
+bool readStoredSmsPduLineByIndex(int smsIndex, String& pduLine) {
+  String resp = sendATCommand(("AT+CMGR=" + String(smsIndex)).c_str(), 5000);
+  Serial.println("CMGR索引 " + String(smsIndex) + " 响应: " + resp);
+
+  int lineStart = 0;
+  for (int i = 0; i <= resp.length(); i++) {
+    if (i == resp.length() || resp.charAt(i) == '\n') {
+      String line = resp.substring(lineStart, i);
+      line.trim();
+      if (isLikelyPduLine(line)) {
+        pduLine = line;
+        return true;
+      }
+      lineStart = i + 1;
+    }
+  }
+
+  pduLine = "";
+  return false;
+}
+
+void appendDecodedSmsFromPdu(String& html, const String& indexLabel, int status, const String& pduLine, SmsListConcatGroup concatGroups[], int& count) {
+  String sender, text, timestamp;
+  if (decodeStoredSmsPdu(pduLine, sender, text, timestamp)) {
+    String displayTimestamp = formatSmsTimestamp(timestamp);
+    int* concatInfo = pdu.getConcatInfo();
+    int refNumber = concatInfo[0];
+    int partNumber = concatInfo[1];
+    int totalParts = concatInfo[2];
+
+    if (totalParts > 1 && partNumber > 0 && totalParts <= MAX_CONCAT_PARTS) {
+      int groupIndex = findSmsListConcatGroup(concatGroups, refNumber, sender, totalParts);
+      if (groupIndex >= 0) {
+        SmsListConcatGroup& group = concatGroups[groupIndex];
+        int partIndex = partNumber - 1;
+        if (!group.partValid[partIndex]) {
+          group.partValid[partIndex] = true;
+          group.parts[partIndex] = text;
+          group.receivedParts++;
+        }
+        if (group.timestamp.length() == 0) group.timestamp = displayTimestamp;
+        if (status == 0) group.status = 0;
+        if (group.indexes.length() > 0) group.indexes += ",";
+        group.indexes += indexLabel;
+      } else {
+        appendSmsCard(html, indexLabel, status, sender, displayTimestamp, text);
+        count++;
+      }
+    } else {
+      appendSmsCard(html, indexLabel, status, sender, displayTimestamp, text);
+      count++;
+    }
+  } else {
+    html += "<div class='sms-card'><div class='sms-meta'>索引: " + htmlEscape(indexLabel) + " | 解码失败</div>";
+    html += "<div class='sms-body'>" + htmlEscape(pduLine) + "</div></div>";
+    count++;
   }
 }
 
@@ -249,83 +395,52 @@ void cleanupSmsStorageReserve() {
 void handleSmsList() {
   if (!checkAuth()) return;
 
-  Serial.println("网页端读取短信列表");
+  Serial.println("网页端读取短信索引列表");
   SmsStorageInfo storageInfo = selectSmsStorage();
   sendATCommand("AT+CMGF=0", 2000);
-  String resp = sendATCommand("AT+CMGL=4", 15000);
-  Serial.println("CMGL响应: " + resp);
-
-  String html = smsStorageHtml(storageInfo);
-  bool success = resp.indexOf("OK") >= 0;
-  int count = 0;
-  int currentIndex = -1;
-  int currentStatus = -1;
-  SmsListConcatGroup concatGroups[MAX_SMS_LIST_CONCAT_GROUPS] = {};
-
-  int lineStart = 0;
-  for (int i = 0; i <= resp.length(); i++) {
-    if (i == resp.length() || resp.charAt(i) == '\n') {
-      String line = resp.substring(lineStart, i);
-      line.trim();
-
-      if (line.startsWith("+CMGL:")) {
-        currentIndex = getCsvField(line, 0).toInt();
-        currentStatus = getCsvField(line, 1).toInt();
-      } else if (currentIndex >= 0 && isLikelyPduLine(line)) {
-        String sender, text, timestamp;
-        if (decodeStoredSmsPdu(line, sender, text, timestamp)) {
-          String displayTimestamp = formatSmsTimestamp(timestamp);
-          int* concatInfo = pdu.getConcatInfo();
-          int refNumber = concatInfo[0];
-          int partNumber = concatInfo[1];
-          int totalParts = concatInfo[2];
-
-          if (totalParts > 1 && partNumber > 0 && totalParts <= MAX_CONCAT_PARTS) {
-            int groupIndex = findSmsListConcatGroup(concatGroups, refNumber, sender, totalParts);
-            if (groupIndex >= 0) {
-              SmsListConcatGroup& group = concatGroups[groupIndex];
-              int partIndex = partNumber - 1;
-              if (!group.partValid[partIndex]) {
-                group.partValid[partIndex] = true;
-                group.parts[partIndex] = text;
-                group.receivedParts++;
-              }
-              if (group.timestamp.length() == 0) group.timestamp = displayTimestamp;
-              if (currentStatus == 0) group.status = 0;
-              if (group.indexes.length() > 0) group.indexes += ",";
-              group.indexes += String(currentIndex);
-            } else {
-              appendSmsCard(html, String(currentIndex), currentStatus, sender, displayTimestamp, text);
-              count++;
-            }
-          } else {
-            appendSmsCard(html, String(currentIndex), currentStatus, sender, displayTimestamp, text);
-            count++;
-          }
-        } else {
-          html += "<div class='sms-card'><div class='sms-meta'>索引: " + String(currentIndex) + " | 解码失败</div>";
-          html += "<div class='sms-body'>" + htmlEscape(line) + "</div></div>";
-          count++;
-        }
-        currentIndex = -1;
-        currentStatus = -1;
-      }
-
-      lineStart = i + 1;
-    }
-  }
-
-  appendSmsListConcatGroups(html, concatGroups, count);
-
-  if (success && count == 0) {
-    html += "模块短信存储中没有短信。";
-  } else if (!success) {
-    html = "模块返回异常:<br><pre>" + htmlEscape(resp) + "</pre>";
-  }
+  int limit = getSmsListLimit();
+  int entryCount = 0;
+  bool success = collectSmsEntriesFromCmgl(limit, smsListEntries, entryCount);
 
   String json = "{";
   json += "\"success\":" + String(success ? "true" : "false") + ",";
-  json += "\"message\":\"" + jsonEscape(html) + "\"";
+  json += "\"storageHtml\":\"" + jsonEscape(smsStorageHtml(storageInfo)) + "\",";
+  json += "\"limit\":" + String(limit) + ",";
+  json += "\"count\":" + String(entryCount) + ",";
+  json += "\"entries\":[";
+  for (int i = 0; i < entryCount; i++) {
+    if (i > 0) json += ",";
+    json += "{";
+    json += "\"index\":" + String(smsListEntries[i].index) + ",";
+    json += "\"status\":" + String(smsListEntries[i].status) + ",";
+    json += "\"tpduLength\":" + String(smsListEntries[i].tpduLength);
+    json += "}";
+  }
+  json += "]";
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleSmsPdu() {
+  if (!checkAuth()) return;
+
+  int smsIndex = server.arg("index").toInt();
+  if (smsIndex <= 0) {
+    server.send(400, "application/json", "{\"success\":false,\"message\":\"invalid index\"}");
+    return;
+  }
+
+  String pduLine;
+  bool success = readStoredSmsPduLineByIndex(smsIndex, pduLine);
+
+  String json = "{";
+  json += "\"success\":" + String(success ? "true" : "false") + ",";
+  json += "\"index\":" + String(smsIndex) + ",";
+  if (success) {
+    json += "\"pdu\":\"" + pduLine + "\"";
+  } else {
+    json += "\"message\":\"CMGR did not return a valid PDU\"";
+  }
   json += "}";
   server.send(200, "application/json", json);
 }

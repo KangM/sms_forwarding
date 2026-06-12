@@ -175,6 +175,7 @@ void setup() {
   server.on("/sms", handleToolsPage);  // 兼容旧链接
   server.on("/sendsms", HTTP_POST, handleSendSms);
   server.on("/smslist", handleSmsList);
+  server.on("/smspdu", handleSmsPdu);
   server.on("/pushdebug", handlePushDebug);
   server.on("/testpush", HTTP_POST, handleTestPush);
   server.on("/ping", HTTP_POST, handlePing);

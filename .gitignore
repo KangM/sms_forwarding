@@ -1,1 +1,23 @@
+# 敏感配置(WiFi 账号密码等)
 code/wifi_config.h
+
+# 临时测试工具
+tools/
+
+# Arduino/ESP32 编译输出
+build_s3/
+build/
+*.bin
+*.elf
+*.map
+*.o
+*.d
+*.a
+
+# 编辑器/IDE 配置
+.vscode/
+.idea/
+
+# 系统文件
+Thumbs.db
+.DS_Store
