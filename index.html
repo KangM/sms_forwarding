@@ -129,7 +129,7 @@
   <div class="container">
     <h1>📱 短信转发器</h1>
     <p style="text-align: center; color: #666; font-size: 14px;">
-      本页面仅用于展示功能，具体请<a href="https://github.com/chenxuuu/sms_forwarding" target="_blank">访问GitHub仓库</a>。
+      本页面仅用于展示功能，具体请<a href="https://github.com/KangM/sms_forwarding" target="_blank">访问GitHub仓库</a>。
     </p>
     <div class="nav">
       <a class="active" id="navConfig" onclick="showPage('config')">⚙️ 系统配置</a>
@@ -195,7 +195,37 @@
             • <code>RESET</code> - 重启设备
           </div>
         </div>
-        
+
+        <div class="section">
+          <div class="section-title">🔁 掉线检测</div>
+          <div class="hint" style="margin-bottom:15px;">开启后通过WiFi按固定间隔向指定URL发起请求，用于掉线检测。连网后会先立即请求一次，之后按间隔重复。</div>
+          <div class="form-group">
+            <label class="label-inline">
+              <input type="checkbox" id="kaEnabled" style="width:auto;margin-right:8px;">
+              启用掉线检测
+            </label>
+          </div>
+          <div class="form-group">
+            <label>请求URL</label>
+            <input type="text" id="kaUrl" placeholder="http://your-server.com/keepalive">
+          </div>
+          <div class="form-group">
+            <label>请求方式</label>
+            <select id="kaMethod">
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>请求内容（POST时作为请求体，Content-Type: application/json）</label>
+            <textarea id="kaBody" rows="3" style="font-family:monospace;"></textarea>
+          </div>
+          <div class="form-group">
+            <label>间隔时间（秒）</label>
+            <input type="number" id="kaInterval" min="1" placeholder="5">
+          </div>
+        </div>
+
         <button type="submit">💾 保存配置</button>
       </form>
     </div>
@@ -234,8 +264,16 @@
       
       <div class="section">
         <div class="section-title">🌐 网络测试</div>
+        <div class="form-group">
+          <label>Ping 目标</label>
+          <input type="text" id="pingUrl" placeholder="不填默认 8.8.8.8">
+        </div>
+        <div class="form-group">
+          <label>包大小（字节）</label>
+          <input type="text" id="pingSize" placeholder="不填使用模组默认">
+        </div>
         <button id="pingBtn" class="btn-ping" onclick="confirmPing()">📡 点我消耗一点流量</button>
-        <div class="hint">将向 8.8.8.8 进行 ping 操作，一次性消耗极少流量费用</div>
+        <div class="hint">不填则向 8.8.8.8 发送默认大小的 ping，一次性消耗极少流量费用</div>
         <div class="result-box" id="pingResult"></div>
       </div>
       
@@ -249,6 +287,13 @@
         <div class="result-box" id="flightResult"></div>
       </div>
       
+      <div class="section">
+        <div class="section-title">💡 LED 状态指示</div>
+        <div class="hint" style="margin-bottom:10px;">板载 LED 会按运行阶段显示不同状态。S3 板载 GP48 的 WS2812 RGB 灯用颜色区分，C3 板载 GP8 单色灯用闪烁节奏区分。下表为各阶段对照（演示）。</div>
+        <table class="info-table" id="ledTable"></table>
+        <div class="hint" style="margin-top:10px;">注：BATTERY LED 由充电管理芯片直连，仅反映电池充电状态，无法由程序控制。</div>
+      </div>
+
       <div class="section">
         <div class="section-title">💻 AT 指令调试</div>
         <div id="atLog">等待输入指令...</div>
@@ -279,6 +324,11 @@
       smtpPass: '',
       smtpSendTo: '',
       adminPhone: '',
+      keepAliveEnabled: false,
+      keepAliveUrl: '',
+      keepAliveMethod: 'GET',
+      keepAliveBody: '',
+      keepAliveInterval: 5,
       pushChannels: [
         { enabled: false, type: 1, name: '通道1', url: '', key1: '', key2: '', customBody: '' },
         { enabled: false, type: 1, name: '通道2', url: '', key1: '', key2: '', customBody: '' },
@@ -391,7 +441,6 @@
         icon: '🟢'
       }
     };
-    
     // 加载配置
     function loadConfig() {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -573,6 +622,11 @@
       document.getElementById('smtpPass').value = config.smtpPass || '';
       document.getElementById('smtpSendTo').value = config.smtpSendTo || '';
       document.getElementById('adminPhone').value = config.adminPhone || '';
+      document.getElementById('kaEnabled').checked = !!config.keepAliveEnabled;
+      document.getElementById('kaUrl').value = config.keepAliveUrl || '';
+      document.getElementById('kaMethod').value = config.keepAliveMethod === 'POST' ? 'POST' : 'GET';
+      document.getElementById('kaBody').value = config.keepAliveBody || '';
+      document.getElementById('kaInterval').value = config.keepAliveInterval || 5;
     }
     
     // 保存配置
@@ -588,6 +642,11 @@
         smtpPass: document.getElementById('smtpPass').value,
         smtpSendTo: document.getElementById('smtpSendTo').value,
         adminPhone: document.getElementById('adminPhone').value,
+        keepAliveEnabled: document.getElementById('kaEnabled').checked,
+        keepAliveUrl: document.getElementById('kaUrl').value,
+        keepAliveMethod: document.getElementById('kaMethod').value === 'POST' ? 'POST' : 'GET',
+        keepAliveBody: document.getElementById('kaBody').value,
+        keepAliveInterval: Math.max(1, parseInt(document.getElementById('kaInterval').value) || 5),
         pushChannels: []
       };
       
@@ -729,6 +788,8 @@
     function doPing() {
       const btn = document.getElementById('pingBtn');
       const result = document.getElementById('pingResult');
+      const host = (document.getElementById('pingUrl').value || '').trim() || '8.8.8.8';
+      const size = (document.getElementById('pingSize').value || '').trim();
       
       btn.disabled = true;
       btn.textContent = '⏳ 正在 Ping...';
@@ -742,7 +803,8 @@
         btn.disabled = false;
         btn.textContent = '📡 点我消耗一点流量';
         result.className = 'result-box result-success';
-        result.innerHTML = `✅ Ping 成功！<br>目标: 8.8.8.8, 延迟: ${delay}ms, TTL: 115`;
+        const sizeText = size ? `, 包大小: ${size} 字节` : '';
+        result.innerHTML = `✅ Ping 成功！<br>目标: ${escapeHtml(host)}${sizeText}, 延迟: ${delay}ms, TTL: 115`;
       }, 2000);
     }
     
@@ -864,6 +926,27 @@
       document.getElementById('atLog').innerHTML = '日志已清空，等待输入指令...';
     }
     
+    // 渲染 LED 状态指示对照表
+    function renderLedTable() {
+      const states = [
+        ['上电初始化', '系统启动中', '⚪ 白', '常亮'],
+        ['模组初始化', '配置 4G 模组', '🟣 紫', '慢闪'],
+        ['等待网络注册', '等待蜂窝网络', '🔵 蓝', '慢闪'],
+        ['WiFi 连接中', '正在连接 WiFi', '🟦 青', '快闪'],
+        ['配网门户', '已开启配网热点', '🟡 黄', '双闪'],
+        ['配置无效', '没有可用的通知通道', '🔴 红', '快闪'],
+        ['正常待机', '运行中', '🟢 绿', '心跳（每 3 秒短闪一次）'],
+        ['转发短信中', '正在推送/发邮件', '🟩 亮绿', '常亮']
+      ];
+      const table = document.getElementById('ledTable');
+      if (!table) return;
+      let html = '<tr><td>阶段</td><td>S3 颜色</td><td>节奏</td></tr>';
+      states.forEach(s => {
+        html += `<tr><td title="${escapeHtml(s[1])}">${escapeHtml(s[0])}</td><td>${escapeHtml(s[2])}</td><td>${escapeHtml(s[3])}</td></tr>`;
+      });
+      table.innerHTML = html;
+    }
+    
     // 初始化
     document.addEventListener('DOMContentLoaded', function() {
       const config = loadConfig();
@@ -893,6 +976,9 @@
       
       // 填充表单数据
       fillForm();
+      
+      // 渲染 LED 状态对照表
+      renderLedTable();
     });
   </script>
 </body>
