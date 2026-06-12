@@ -288,13 +288,6 @@
       </div>
       
       <div class="section">
-        <div class="section-title">💡 LED 状态指示</div>
-        <div class="hint" style="margin-bottom:10px;">板载 LED 会按运行阶段显示不同状态。S3 板载 GP48 的 WS2812 RGB 灯用颜色区分，C3 板载 GP8 单色灯用闪烁节奏区分。下表为各阶段对照（演示）。</div>
-        <table class="info-table" id="ledTable"></table>
-        <div class="hint" style="margin-top:10px;">注：BATTERY LED 由充电管理芯片直连，仅反映电池充电状态，无法由程序控制。</div>
-      </div>
-
-      <div class="section">
         <div class="section-title">💻 AT 指令调试</div>
         <div id="atLog">等待输入指令...</div>
         <div class="at-input-group">
@@ -926,27 +919,6 @@
       document.getElementById('atLog').innerHTML = '日志已清空，等待输入指令...';
     }
     
-    // 渲染 LED 状态指示对照表
-    function renderLedTable() {
-      const states = [
-        ['上电初始化', '系统启动中', '⚪ 白', '常亮'],
-        ['模组初始化', '配置 4G 模组', '🟣 紫', '慢闪'],
-        ['等待网络注册', '等待蜂窝网络', '🔵 蓝', '慢闪'],
-        ['WiFi 连接中', '正在连接 WiFi', '🟦 青', '快闪'],
-        ['配网门户', '已开启配网热点', '🟡 黄', '双闪'],
-        ['配置无效', '没有可用的通知通道', '🔴 红', '快闪'],
-        ['正常待机', '运行中', '🟢 绿', '心跳（每 3 秒短闪一次）'],
-        ['转发短信中', '正在推送/发邮件', '🟩 亮绿', '常亮']
-      ];
-      const table = document.getElementById('ledTable');
-      if (!table) return;
-      let html = '<tr><td>阶段</td><td>S3 颜色</td><td>节奏</td></tr>';
-      states.forEach(s => {
-        html += `<tr><td title="${escapeHtml(s[1])}">${escapeHtml(s[0])}</td><td>${escapeHtml(s[2])}</td><td>${escapeHtml(s[3])}</td></tr>`;
-      });
-      table.innerHTML = html;
-    }
-    
     // 初始化
     document.addEventListener('DOMContentLoaded', function() {
       const config = loadConfig();
@@ -976,9 +948,6 @@
       
       // 填充表单数据
       fillForm();
-      
-      // 渲染 LED 状态对照表
-      renderLedTable();
     });
   </script>
 </body>
