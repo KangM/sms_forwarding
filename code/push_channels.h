@@ -268,13 +268,16 @@ bool sendToChannel(const PushChannel& channel, const char* sender, const char* m
 
 // 发送短信到所有启用的推送通道（由网络后台任务调用，可安全阻塞）
 void sendSMSToServer(const char* sender, const char* message, const char* timestamp) {
-  // 推送前打印WiFi诊断（含RSSI和网关Ping），便于判断是否“假在线”
-  printWiFiDiagnostics("准备HTTP推送");
   Serial.println("[Push] 准备推送，发送者=" + String(sender));
   appendPushDebugLog("准备推送短信，发送者=" + String(sender) + "，时间=" + String(timestamp));
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[Push] 取消：WiFi未连接(status=" + String((int)WiFi.status()) + ")");
     appendPushDebugLog("推送取消：WiFi未连接，状态=" + wifiStatusText(WiFi.status()));
+    return;
+  }
+  if (!ensureWiFiGatewayReachable("HTTP推送前检查", true)) {
+    Serial.println("[Push] 取消：WiFi网关不可达，已触发重连");
+    appendPushDebugLog("推送取消：WiFi网关不可达，已触发重连");
     return;
   }
 

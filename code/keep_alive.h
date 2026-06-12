@@ -45,6 +45,8 @@ bool doKeepAliveRequest() {
   } else {
     Serial.println("[KeepAlive] 失败 错误=" + http.errorToString(httpCode) + " 耗时=" + String(cost) + "ms");
     appendPushDebugLog("持续请求失败: " + http.errorToString(httpCode));
+    printWiFiDiagnostics("KeepAlive失败: " + http.errorToString(httpCode));
+    handleWiFiNetworkFailure("KeepAlive失败: " + http.errorToString(httpCode));
   }
   http.end();
   return ok;
@@ -69,6 +71,13 @@ void handleKeepAlive() {
   wl_status_t st = WiFi.status();
   if (st != WL_CONNECTED) {
     Serial.println("[KeepAlive] 跳过请求：WiFi未连接(status=" + String((int)st) + ")");
+    printWiFiDiagnostics("KeepAlive跳过: WiFi未连接");
+    return;
+  }
+
+  if (!ensureWiFiGatewayReachable("KeepAlive前检查", true)) {
+    Serial.println("[KeepAlive] 跳过请求：WiFi网关不可达，已触发恢复");
+    appendPushDebugLog("持续请求跳过：WiFi网关不可达，已触发恢复");
     return;
   }
 

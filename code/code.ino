@@ -51,6 +51,12 @@ ConcatSms concatBuffer[MAX_CONCAT_MESSAGES];  // 长短信缓存
 
 #include "web_config_handlers.h"
 
+bool ensureWiFiGatewayReachable(const String& source, bool reconnectOnFailure);
+void handleWiFiNetworkFailure(const String& source);
+void wifiReachabilityWatchdog();
+void forceWiFiFullReset(const char* reason);
+void setupWiFiEventLogging();
+
 #include "at_command.h"
 
 #include "web_tool_handlers.h"
@@ -71,6 +77,8 @@ ConcatSms concatBuffer[MAX_CONCAT_MESSAGES];  // 长短信缓存
 
 #include "wifi_provision.h"
 
+#include "serial_console.h"
+
 void setup() {
   //  指示灯
   ledInit();
@@ -79,6 +87,8 @@ void setup() {
   // USB 串口日志
   Serial.begin(115200);
   delay(1500);  // 等 USB CDC 稳定
+  Serial.println("USB串口命令台已启用，输入 HELP 查看命令。AT... 会按整行转发给模组。");
+  setupWiFiEventLogging();
 
   // 模组串口（UART）
   Serial1.begin(115200, SERIAL_8N1, RXD, TXD);
@@ -229,6 +239,9 @@ void loop() {
   // WiFi 重连看门狗，掉线后主动恢复
   wifiReconnectWatchdog();
 
+  // WiFi 可达性看门狗：处理 WL_CONNECTED 但网关不通的“假在线”
+  wifiReachabilityWatchdog();
+
   // WiFi 漫游看门狗：弱信号时切换到同SSID更强的AP
   wifiRoamWatchdog();
 
@@ -238,8 +251,9 @@ void loop() {
   // 检查长短信超时
   checkConcatTimeout();
 
-  // 本地透传
-  if (Serial.available()) Serial1.write(Serial.read());
+  // USB 串口命令台：本机诊断命令由 ESP32 处理，AT... 按整行转发给模组
+  handleUsbSerialConsole();
+
   // 检查URC和解析
   checkSerial1URC();
 

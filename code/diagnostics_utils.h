@@ -120,8 +120,12 @@ void printWiFiDiagnostics(const String& source) {
   Serial.println("SSID: " + WiFi.SSID());
   Serial.println("IP: " + WiFi.localIP().toString());
   Serial.println("网关: " + WiFi.gatewayIP().toString());
+  Serial.println("子网掩码: " + WiFi.subnetMask().toString());
+  Serial.println("DNS: " + WiFi.dnsIP().toString());
   Serial.println("RSSI: " + String(WiFi.RSSI()) + " dBm");
   Serial.println("信道: " + String(WiFi.channel()));
+  Serial.println("BSSID: " + WiFi.BSSIDstr());
+  Serial.println("MAC: " + WiFi.macAddress());
   if (pingGatewayInWiFiDiagnostics) {
     Serial.println("网关Ping: " + pingGatewayForWiFiDiagnostics(WiFi.gatewayIP()));
   }

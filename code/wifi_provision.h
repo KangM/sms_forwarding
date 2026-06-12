@@ -48,6 +48,64 @@ void processWiFiConfigPortalDns() {
   }
 }
 
+String wifiDisconnectReasonText(uint8_t reason) {
+  switch (reason) {
+    case 2: return "AUTH_EXPIRE";
+    case 4: return "ASSOC_EXPIRE";
+    case 5: return "ASSOC_TOOMANY";
+    case 8: return "ASSOC_LEAVE";
+    case 15: return "4WAY_HANDSHAKE_TIMEOUT";
+    case 200: return "BEACON_TIMEOUT";
+    case 201: return "NO_AP_FOUND";
+    case 202: return "AUTH_FAIL";
+    case 203: return "ASSOC_FAIL";
+    case 204: return "HANDSHAKE_TIMEOUT";
+    case 205: return "CONNECTION_FAIL";
+    case 206: return "AP_TSF_RESET";
+    case 207: return "ROAMING";
+    default: return "UNKNOWN";
+  }
+}
+
+String wifiEventSsid(const uint8_t* ssid, uint8_t len) {
+  char buf[33];
+  uint8_t copyLen = len;
+  if (copyLen > 32) copyLen = 32;
+  memcpy(buf, ssid, copyLen);
+  buf[copyLen] = '\0';
+  return String(buf);
+}
+
+void setupWiFiEventLogging() {
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    switch (event) {
+      case ARDUINO_EVENT_WIFI_STA_START:
+        Serial.println("[WiFiEvent] STA_START");
+        break;
+      case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+        Serial.println("[WiFiEvent] STA_CONNECTED SSID=" +
+                       wifiEventSsid(info.wifi_sta_connected.ssid, info.wifi_sta_connected.ssid_len) +
+                       " channel=" + String(info.wifi_sta_connected.channel));
+        break;
+      case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+        Serial.println("[WiFiEvent] STA_GOT_IP IP=" + WiFi.localIP().toString() +
+                       " Gateway=" + WiFi.gatewayIP().toString());
+        break;
+      case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
+        uint8_t reason = info.wifi_sta_disconnected.reason;
+        Serial.println("[WiFiEvent] STA_DISCONNECTED reason=" + String(reason) +
+                       " (" + wifiDisconnectReasonText(reason) + ")");
+        break;
+      }
+      case ARDUINO_EVENT_WIFI_STA_LOST_IP:
+        Serial.println("[WiFiEvent] STA_LOST_IP");
+        break;
+      default:
+        break;
+    }
+  });
+}
+
 bool connectWiFiStation(const String& ssid, const String& pass, unsigned long timeoutMs) {
   if (ssid.length() == 0) return false;
 
@@ -126,6 +184,89 @@ void forceWiFiReconnect(const char* reason) {
 
 // WiFi 重连看门狗：在 loop 中周期调用。
 // 当已配置过WiFi且不在配网门户模式时，检测掉线并主动重连，避免“假在线”后无法恢复。
+void forceWiFiFullReset(const char* reason) {
+  if (wifiConfigPortalActive) return;
+
+  static unsigned long lastFullReset = 0;
+  unsigned long now = millis();
+  if (lastFullReset != 0 && now - lastFullReset < 60000) {
+    Serial.println("[WiFi] Skip full reset, already ran within 60s. Reason: " + String(reason));
+    return;
+  }
+  lastFullReset = now;
+
+  String ssid, pass;
+  if (!loadSavedWiFiCredentials(ssid, pass) || ssid.length() == 0) {
+    Serial.println("[WiFi] Full reset failed: no saved WiFi credentials");
+    return;
+  }
+
+  Serial.println("[WiFi] Full reset(" + String(reason) + ") SSID: " + ssid);
+  WiFi.disconnect(true);
+  delay(300);
+  WiFi.mode(WIFI_OFF);
+  delay(800);
+  WiFi.mode(WIFI_STA);
+  delay(100);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(ssid.c_str(), pass.c_str(), 0, nullptr, true);
+}
+
+bool ensureWiFiGatewayReachable(const String& source, bool reconnectOnFailure) {
+  if (wifiConfigPortalActive) return true;
+
+  wl_status_t st = WiFi.status();
+  if (st != WL_CONNECTED) {
+    Serial.println("[WiFi] " + source + " 检测到未连接(status=" + String((int)st) + ")，请求重连");
+    WiFi.reconnect();
+    return false;
+  }
+
+  String pingResult = pingGatewayForWiFiDiagnostics(WiFi.gatewayIP());
+  bool ok = pingResult.startsWith("成功");
+  Serial.println("[WiFi] " + source + " 网关可达性: " + pingResult);
+
+  if (!ok && reconnectOnFailure) {
+    forceWiFiReconnect(source.c_str());
+  }
+  return ok;
+}
+
+void handleWiFiNetworkFailure(const String& source) {
+  ensureWiFiGatewayReachable(source, true);
+}
+
+void wifiReachabilityWatchdog() {
+  if (wifiConfigPortalActive) return;
+
+  static unsigned long lastCheck = 0;
+  static int consecutiveGatewayFailures = 0;
+  unsigned long now = millis();
+
+  if (now - lastCheck < 60000) return;
+  lastCheck = now;
+
+  wl_status_t st = WiFi.status();
+  if (st != WL_CONNECTED) {
+    consecutiveGatewayFailures = 0;
+    return;
+  }
+
+  bool ok = ensureWiFiGatewayReachable("可达性看门狗", false);
+  if (ok) {
+    consecutiveGatewayFailures = 0;
+    return;
+  }
+
+  consecutiveGatewayFailures++;
+  Serial.println("[WiFi] 可达性看门狗连续失败次数: " + String(consecutiveGatewayFailures));
+  if (consecutiveGatewayFailures >= 2) {
+    forceWiFiReconnect("可达性看门狗检测到网关不可达");
+    consecutiveGatewayFailures = 0;
+  }
+}
+
 void wifiReconnectWatchdog() {
   if (wifiConfigPortalActive) return;  // 配网模式不干预
 
