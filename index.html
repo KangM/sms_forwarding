@@ -125,6 +125,20 @@
     /* 推送调试日志 */
     #pushDebugLog { background: #222; color: #d6ffd6; font-family: 'Courier New', monospace; min-height: 120px; max-height: 320px; overflow-y: auto; padding: 10px; border-radius: 5px; margin-top: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
     details.section summary { cursor: pointer; list-style: revert; }
+    .filter-row { display: flex; gap: 10px; }
+    .filter-row .form-group { flex: 1; }
+    .filter-modal-mask { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 1800; padding: 20px; overflow-y: auto; }
+    .filter-modal { max-width: 520px; margin: 60px auto; background: #fff; padding: 18px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.25); }
+    .filter-modal-actions { display: flex; gap: 10px; }
+    .filter-modal-actions button { flex: 1; }
+    .filter-result { margin-top: 12px; padding: 10px; border-radius: 5px; display: none; line-height: 1.6; }
+    .filter-result.allow { background: #e8f5e9; border-left: 4px solid #4CAF50; color: #2e7d32; }
+    .filter-result.block { background: #fff3e0; border-left: 4px solid #FF9800; color: #e65100; }
+    .filter-result.invalid { background: #ffebee; border-left: 4px solid #f44336; color: #c62828; }
+    @media (max-width: 520px) {
+      .filter-row { display: block; }
+      .filter-modal { margin: 20px auto; }
+    }
   </style>
 </head>
 <body>
@@ -148,6 +162,24 @@
 
   <!-- Toast提示 -->
   <div class="toast" id="toast"></div>
+  <div class="filter-modal-mask" id="pushFilterModal">
+    <div class="filter-modal">
+      <div class="section-title">测试推送过滤规则</div>
+      <div class="form-group">
+        <label>发信号码</label>
+        <input type="text" id="filterTestSender" placeholder="例如：10086">
+      </div>
+      <div class="form-group">
+        <label>短信内容</label>
+        <textarea id="filterTestMessage" rows="5" placeholder="粘贴一段短信内容进行测试"></textarea>
+      </div>
+      <div class="filter-modal-actions">
+        <button type="button" class="btn-send" onclick="runPushFilterTest()">测试</button>
+        <button type="button" style="background:#607D8B;" onclick="closePushFilterTest()">关闭</button>
+      </div>
+      <div class="filter-result" id="filterTestResult"></div>
+    </div>
+  </div>
 
   <div class="container">
     <h1>📱 短信转发器</h1>
@@ -212,7 +244,39 @@
         <div class="section">
           <div class="section-title">🔗 HTTP推送通道设置</div>
           <div class="hint" style="margin-bottom:15px;">可同时启用多个推送通道，每个通道独立配置。支持POST JSON、Bark、GET、钉钉、PushPlus、Server酱、飞书、Gotify、Telegram等多种方式。</div>
-          
+
+          <div class="push-channel enabled">
+            <div class="push-channel-header">
+              <input type="checkbox" id="pushFilterEnabled">
+              <label for="pushFilterEnabled" class="label-inline">启用推送过滤（匹配才推送）</label>
+            </div>
+            <div class="push-channel-body">
+              <div class="filter-row">
+                <div class="form-group">
+                  <label>匹配对象</label>
+                  <select id="pushFilterTarget">
+                    <option value="sender">发信号码</option>
+                    <option value="message">短信内容</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>匹配方式</label>
+                  <select id="pushFilterMode">
+                    <option value="contains">包含</option>
+                    <option value="not_contains">不包含</option>
+                    <option value="starts_with">开头</option>
+                    <option value="ends_with">结尾</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>过滤内容</label>
+                <input type="text" id="pushFilterExpr" placeholder="例如：A&&B 或 A||B">
+                <div class="hint">支持 && 或 ||，不能混用；空内容等价于不过滤。匹配成功才会转发。</div>
+              </div>
+              <button type="button" class="btn-send" onclick="openPushFilterTest()">测试规则</button>
+            </div>
+          </div>
           <div id="pushChannelsContainer"></div>
         </div>
         
@@ -355,13 +419,13 @@
         <div class="form-group">
           <label>显示数量</label>
           <select id="smsListLimit">
-            <option value="20" selected>前 20 条</option>
-            <option value="50">前 50 条</option>
-            <option value="100">前 100 条</option>
+            <option value="20" selected>最新 20 条</option>
+            <option value="50">最新 50 条</option>
+            <option value="100">最新 100 条</option>
           </select>
         </div>
         <button type="button" class="btn-info" id="smsListBtn" onclick="loadSmsList()">查看短信列表</button>
-        <div class="hint">读取模块短信存储中的短信，长短信会自动合并显示。</div>
+        <div class="hint">先扫描全部索引，仅保留最新一批，再用 CMGR 逐条读取，避免 CMGL 批量PDU过长导致截断。</div>
         <div class="result-box" id="smsListResult"></div>
       </div>
 
@@ -402,6 +466,10 @@
       keepAliveMethod: 'GET',
       keepAliveBody: '',
       keepAliveInterval: 5,
+      pushFilterEnabled: false,
+      pushFilterTarget: 'sender',
+      pushFilterMode: 'contains',
+      pushFilterExpr: '',
       pushChannels: [
         { enabled: false, type: 1, name: '通道1', url: '', key1: '', key2: '', customBody: '' },
         { enabled: false, type: 1, name: '通道2', url: '', key1: '', key2: '', customBody: '' },
@@ -691,6 +759,88 @@
     }
     
     // 填充表单数据
+    function getCurrentPushFilterRule() {
+      return {
+        enabled: document.getElementById('pushFilterEnabled').checked,
+        target: document.getElementById('pushFilterTarget').value,
+        mode: document.getElementById('pushFilterMode').value,
+        expr: document.getElementById('pushFilterExpr').value || ''
+      };
+    }
+
+    function matchOneToken(value, mode, token) {
+      if (mode === 'contains') return value.indexOf(token) !== -1;
+      if (mode === 'not_contains') return value.indexOf(token) === -1;
+      if (mode === 'starts_with') return value.startsWith(token);
+      if (mode === 'ends_with') return value.endsWith(token);
+      return false;
+    }
+
+    function evaluatePushFilter(rule, sender, message) {
+      const expr = (rule.expr || '').trim();
+      const targetText = rule.target === 'message' ? (message || '') : (sender || '');
+
+      if (!rule.enabled || !expr) {
+        return { valid: true, allowed: true, reason: '过滤未启用或内容为空，全部放行。' };
+      }
+
+      const hasAnd = expr.indexOf('&&') !== -1;
+      const hasOr = expr.indexOf('||') !== -1;
+      if (hasAnd && hasOr) {
+        return { valid: false, allowed: false, reason: '规则非法：不能混用 && 和 ||。' };
+      }
+
+      const op = hasAnd ? '&&' : (hasOr ? '||' : '');
+      const tokens = op ? expr.split(op).map(t => t.trim()).filter(Boolean) : [expr];
+      if (!tokens.length) {
+        return { valid: true, allowed: true, reason: '过滤内容为空，全部放行。' };
+      }
+
+      const matches = tokens.map(token => matchOneToken(targetText, rule.mode, token));
+      const allowed = op === '&&' ? matches.every(Boolean) : (op === '||' ? matches.some(Boolean) : matches[0]);
+      return {
+        valid: true,
+        allowed,
+        reason: allowed ? '规则匹配成功，会转发。' : '规则未匹配，不会转发。',
+        tokens,
+        targetText
+      };
+    }
+
+    function openPushFilterTest() {
+      const result = document.getElementById('filterTestResult');
+      result.style.display = 'none';
+      result.className = 'filter-result';
+      document.getElementById('pushFilterModal').style.display = 'block';
+    }
+
+    function closePushFilterTest() {
+      document.getElementById('pushFilterModal').style.display = 'none';
+    }
+
+    function runPushFilterTest() {
+      const sender = document.getElementById('filterTestSender').value;
+      const message = document.getElementById('filterTestMessage').value;
+      const rule = getCurrentPushFilterRule();
+      const data = evaluatePushFilter(rule, sender, message);
+      const targetLabel = rule.target === 'message' ? '短信内容' : '发信号码';
+      const modeLabels = {
+        contains: '包含',
+        not_contains: '不包含',
+        starts_with: '开头',
+        ends_with: '结尾'
+      };
+      const result = document.getElementById('filterTestResult');
+      result.style.display = 'block';
+      result.className = 'filter-result ' + (!data.valid ? 'invalid' : (data.allowed ? 'allow' : 'block'));
+      result.innerHTML =
+        '<b>' + (!data.valid ? '规则非法' : (data.allowed ? '会转发' : '不会转发')) + '</b><br>' +
+        '匹配对象：' + targetLabel + '<br>' +
+        '匹配方式：' + (modeLabels[rule.mode] || rule.mode) + '<br>' +
+        '表达式：' + escapeHtml(rule.expr || '(空)') + '<br>' +
+        '说明：' + escapeHtml(data.reason);
+    }
+
     function fillForm() {
       const config = loadConfig();
       document.getElementById('webUser').value = config.webUser || '';
@@ -708,6 +858,10 @@
       document.getElementById('kaMethod').value = config.keepAliveMethod === 'POST' ? 'POST' : 'GET';
       document.getElementById('kaBody').value = config.keepAliveBody || '';
       document.getElementById('kaInterval').value = config.keepAliveInterval || 5;
+      document.getElementById('pushFilterEnabled').checked = !!config.pushFilterEnabled;
+      document.getElementById('pushFilterTarget').value = config.pushFilterTarget === 'message' ? 'message' : 'sender';
+      document.getElementById('pushFilterMode').value = ['contains', 'not_contains', 'starts_with', 'ends_with'].includes(config.pushFilterMode) ? config.pushFilterMode : 'contains';
+      document.getElementById('pushFilterExpr').value = config.pushFilterExpr || '';
     }
     
     // 保存配置
@@ -730,6 +884,10 @@
         keepAliveMethod: document.getElementById('kaMethod').value === 'POST' ? 'POST' : 'GET',
         keepAliveBody: document.getElementById('kaBody').value,
         keepAliveInterval: Math.max(1, parseInt(document.getElementById('kaInterval').value) || 5),
+        pushFilterEnabled: document.getElementById('pushFilterEnabled').checked,
+        pushFilterTarget: document.getElementById('pushFilterTarget').value,
+        pushFilterMode: document.getElementById('pushFilterMode').value,
+        pushFilterExpr: document.getElementById('pushFilterExpr').value,
         pushChannels: []
       };
       
@@ -995,6 +1153,18 @@
       result.style.display = 'block';
       result.textContent = '正在发送测试推送...';
 
+      const filterResult = evaluatePushFilter(getCurrentPushFilterRule(), 'TEST_PUSH', '这是一条推送通道测试消息');
+      if (!filterResult.valid || !filterResult.allowed) {
+        appendPushDebug('测试推送被过滤规则拦截: ' + filterResult.reason);
+        result.className = filterResult.valid ? 'result-box result-info' : 'result-box result-error';
+        result.textContent = filterResult.valid
+          ? '测试推送被过滤规则拦截（演示）：' + filterResult.reason
+          : '过滤规则非法，测试推送已拦截（演示）：' + filterResult.reason;
+        renderPushDebug();
+        btn.disabled = false;
+        return;
+      }
+
       setTimeout(() => {
         appendPushDebug('手动触发测试推送');
         appendPushDebug('[通道1] REQUEST POST https://example.com/api');
@@ -1019,14 +1189,18 @@
       btn.textContent = '正在读取...';
       result.className = 'result-box result-loading';
       result.style.display = 'block';
-      result.textContent = '正在读取前 ' + limit + ' 条短信，请稍候...';
+      result.textContent = '正在读取最新 ' + limit + ' 条短信，请稍候...';
 
       setTimeout(() => {
         const info = mockData.storageInfo;
-        const list = mockData.smsList.slice(0, parseInt(limit));
+        const scanned = mockData.smsList.length;
+        const list = mockData.smsList
+          .slice()
+          .sort((a, b) => b.index - a.index)
+          .slice(0, parseInt(limit));
         let html = '<div>模块短信存储(ME): 已用 ' + info.used + ' / 总容量 ' + info.total +
                    ' | 剩余 ' + (info.total - info.used) + '</div>';
-        html += '<div>本次显示前 ' + limit + ' 条，实际读取 ' + list.length + ' 条。</div>';
+        html += '<div>本次扫描到 ' + scanned + ' 条，显示最新 ' + limit + ' 条，实际读取 ' + list.length + ' 条。内容由浏览器逐条解析。</div>';
         if (list.length === 0) {
           html += '模块短信存储中没有短信。';
         } else {
