@@ -36,10 +36,10 @@ void startWiFiConfigPortal() {
   if (ok) {
     dnsServer.start(WIFI_PROVISION_DNS_PORT, "*", WiFi.softAPIP());
   }
-  Serial.println(ok ? "WiFi配网AP已启动" : "WiFi配网AP启动失败");
-  Serial.println("AP名称: " + apSsid);
-  Serial.println("AP密码: 无（开放网络）");
-  Serial.println("配网页面: http://" + WiFi.softAPIP().toString() + "/wifi");
+  systemLogSerialOnly(ok ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR,
+                      LOG_MODULE_WIFI,
+                      String(ok ? "config portal started" : "config portal start failed") +
+                        " ap=" + apSsid + " ip=" + WiFi.softAPIP().toString());
 }
 
 void processWiFiConfigPortalDns() {
@@ -80,25 +80,28 @@ void setupWiFiEventLogging() {
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
     switch (event) {
       case ARDUINO_EVENT_WIFI_STA_START:
-        Serial.println("[WiFiEvent] STA_START");
+        systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "event STA_START");
         break;
       case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-        Serial.println("[WiFiEvent] STA_CONNECTED SSID=" +
-                       wifiEventSsid(info.wifi_sta_connected.ssid, info.wifi_sta_connected.ssid_len) +
-                       " channel=" + String(info.wifi_sta_connected.channel));
+        systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_WIFI,
+                         "event STA_CONNECTED ssid=" +
+                           wifiEventSsid(info.wifi_sta_connected.ssid, info.wifi_sta_connected.ssid_len) +
+                           " channel=" + String(info.wifi_sta_connected.channel));
         break;
       case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-        Serial.println("[WiFiEvent] STA_GOT_IP IP=" + WiFi.localIP().toString() +
-                       " Gateway=" + WiFi.gatewayIP().toString());
+        systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_WIFI,
+                         "event STA_GOT_IP ip=" + WiFi.localIP().toString() +
+                           " gateway=" + WiFi.gatewayIP().toString());
         break;
       case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
         uint8_t reason = info.wifi_sta_disconnected.reason;
-        Serial.println("[WiFiEvent] STA_DISCONNECTED reason=" + String(reason) +
-                       " (" + wifiDisconnectReasonText(reason) + ")");
+        systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_WIFI,
+                         "event STA_DISCONNECTED reason=" + String(reason) +
+                           " (" + wifiDisconnectReasonText(reason) + ")");
         break;
       }
       case ARDUINO_EVENT_WIFI_STA_LOST_IP:
-        Serial.println("[WiFiEvent] STA_LOST_IP");
+        systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_WIFI, "event STA_LOST_IP");
         break;
       default:
         break;
@@ -120,7 +123,7 @@ bool connectWiFiStation(const String& ssid, const String& pass, unsigned long ti
   WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
   WiFi.begin(ssid.c_str(), pass.c_str(), 0, nullptr, true);
 
-  Serial.println("连接WiFi: " + ssid);
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "connect start ssid=" + ssid);
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < timeoutMs) {
     blink_short();
@@ -129,13 +132,12 @@ bool connectWiFiStation(const String& ssid, const String& pass, unsigned long ti
   if (WiFi.status() == WL_CONNECTED) {
     // 连接成功后再次确保关闭休眠（mode/begin 可能重置该标志）
     WiFi.setSleep(false);
-    Serial.println("WiFi已连接");
-    Serial.print("IP地址: ");
-    Serial.println(WiFi.localIP());
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_WIFI,
+                     "connected ssid=" + ssid + " ip=" + WiFi.localIP().toString());
     return true;
   }
 
-  Serial.println("WiFi连接失败或超时: " + ssid);
+  systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_WIFI, "connect timeout or failed ssid=" + ssid);
   return false;
 }
 
@@ -148,7 +150,7 @@ bool connectWiFiOrStartConfigPortal() {
   }
 
   if (ssid.length() == 0) {
-    Serial.println("未保存WiFi，进入配网模式");
+    systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_WIFI, "no saved WiFi credentials, entering config portal");
   }
 
   startWiFiConfigPortal();
@@ -163,14 +165,16 @@ void forceWiFiReconnect(const char* reason) {
   unsigned long now = millis();
   // 限频：30 秒内最多强制重连一次，避免频繁打断
   if (lastForce != 0 && now - lastForce < 30000) {
-    Serial.println("[WiFi] 跳过强制重连（30秒内已执行过）原因: " + String(reason));
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_WIFI,
+                     "skip reconnect throttled reason=" + String(reason));
     return;
   }
   lastForce = now;
 
   String ssid, pass;
   if (loadSavedWiFiCredentials(ssid, pass) && ssid.length() > 0) {
-    Serial.println("[WiFi] 强制重连(" + String(reason) + ") SSID: " + ssid);
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_WIFI,
+                     "force reconnect reason=" + String(reason) + " ssid=" + ssid);
     WiFi.disconnect();
     delay(100);
     WiFi.mode(WIFI_STA);
@@ -178,7 +182,7 @@ void forceWiFiReconnect(const char* reason) {
     WiFi.setAutoReconnect(true);
     WiFi.begin(ssid.c_str(), pass.c_str(), 0, nullptr, true);
   } else {
-    Serial.println("[WiFi] 强制重连失败：无已保存凭据");
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_WIFI, "force reconnect failed: no saved credentials");
   }
 }
 
@@ -190,18 +194,20 @@ void forceWiFiFullReset(const char* reason) {
   static unsigned long lastFullReset = 0;
   unsigned long now = millis();
   if (lastFullReset != 0 && now - lastFullReset < 60000) {
-    Serial.println("[WiFi] Skip full reset, already ran within 60s. Reason: " + String(reason));
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_WIFI,
+                     "skip full reset throttled reason=" + String(reason));
     return;
   }
   lastFullReset = now;
 
   String ssid, pass;
   if (!loadSavedWiFiCredentials(ssid, pass) || ssid.length() == 0) {
-    Serial.println("[WiFi] Full reset failed: no saved WiFi credentials");
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_WIFI, "full reset failed: no saved credentials");
     return;
   }
 
-  Serial.println("[WiFi] Full reset(" + String(reason) + ") SSID: " + ssid);
+  systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_WIFI,
+                   "full reset reason=" + String(reason) + " ssid=" + ssid);
   WiFi.disconnect(true);
   delay(300);
   WiFi.mode(WIFI_OFF);
@@ -218,17 +224,25 @@ bool ensureWiFiGatewayReachable(const String& source, bool reconnectOnFailure) {
 
   wl_status_t st = WiFi.status();
   if (st != WL_CONNECTED) {
-    Serial.println("[WiFi] " + source + " 检测到未连接(status=" + String((int)st) + ")，请求重连");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_WIFI,
+                     source + " detected not connected status=" + String((int)st));
     WiFi.reconnect();
     return false;
   }
 
   String pingResult = pingGatewayForWiFiDiagnostics(WiFi.gatewayIP());
   bool ok = pingResult.startsWith("成功");
-  Serial.println("[WiFi] " + source + " 网关可达性: " + pingResult);
+  systemLogSerialOnly(ok ? LOG_LEVEL_INFO : LOG_LEVEL_WARN,
+                      LOG_MODULE_WIFI,
+                      source + " gateway reachability: " + pingResult);
 
   if (!ok && reconnectOnFailure) {
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_WIFI,
+                     source + " gateway unreachable: " + pingResult);
     forceWiFiReconnect(source.c_str());
+  } else if (!ok) {
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_WIFI,
+                     source + " gateway unreachable: " + pingResult);
   }
   return ok;
 }
@@ -260,7 +274,8 @@ void wifiReachabilityWatchdog() {
   }
 
   consecutiveGatewayFailures++;
-  Serial.println("[WiFi] 可达性看门狗连续失败次数: " + String(consecutiveGatewayFailures));
+  systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_WIFI,
+                   "reachability watchdog consecutive failures=" + String(consecutiveGatewayFailures));
   if (consecutiveGatewayFailures >= 2) {
     forceWiFiReconnect("可达性看门狗检测到网关不可达");
     consecutiveGatewayFailures = 0;
@@ -282,8 +297,9 @@ void wifiReconnectWatchdog() {
   wl_status_t st = WiFi.status();
   // 状态变化时打印，便于排查
   if (st != lastStatus) {
-    Serial.println("[WiFi] 状态变化: " + String((int)lastStatus) + " -> " + String((int)st) +
-                   (st == WL_CONNECTED ? (" 已连接 IP=" + WiFi.localIP().toString()) : ""));
+    systemLogPrintln(st == WL_CONNECTED ? LOG_LEVEL_INFO : LOG_LEVEL_WARN, LOG_MODULE_WIFI,
+                     "status change " + String((int)lastStatus) + " -> " + String((int)st) +
+                       (st == WL_CONNECTED ? (" ip=" + WiFi.localIP().toString()) : ""));
     lastStatus = st;
   }
 
@@ -295,14 +311,16 @@ void wifiReconnectWatchdog() {
   // 记录首次检测到掉线的时间
   if (disconnectedSince == 0) {
     disconnectedSince = now;
-    Serial.println("[WiFi] 检测到掉线(status=" + String((int)st) + ")，尝试重连...");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_WIFI,
+                     "watchdog detected disconnect status=" + String((int)st) + ", reconnecting");
     WiFi.reconnect();
     return;
   }
 
   // 持续掉线超过 30 秒，做一次更彻底的重连
   if (now - disconnectedSince > 30000) {
-    Serial.println("[WiFi] 长时间掉线，执行强制重连");
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_WIFI,
+                     "watchdog long disconnect, force reconnect");
     forceWiFiReconnect("看门狗检测长时间掉线");
     disconnectedSince = now;  // 重置计时，避免频繁重连
   }
@@ -330,7 +348,8 @@ void wifiRoamWatchdog() {
     int curRssi = WiFi.RSSI();
     if (curRssi >= WIFI_ROAM_RSSI_THRESHOLD) return;  // 信号够好，不折腾
 
-    Serial.println("[Roam] 当前信号较弱(" + String(curRssi) + "dBm)，发起异步扫描寻找更强AP");
+    systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI,
+                        "roam scan start currentRssi=" + String(curRssi));
     WiFi.scanNetworks(true);  // 异步扫描
     scanning = true;
     return;
@@ -364,8 +383,10 @@ void wifiRoamWatchdog() {
     uint8_t* newBssid = WiFi.BSSID(bestIdx);
     bool sameAp = curBssid && newBssid && memcmp(curBssid, newBssid, 6) == 0;
     if (!sameAp) {
-      Serial.println("[Roam] 发现更强AP: " + String(bestRssi) + "dBm (当前 " + String(curRssi) +
-                     "dBm)，切换到信道 " + String(WiFi.channel(bestIdx)));
+      systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_WIFI,
+                       "roam switch better AP bestRssi=" + String(bestRssi) +
+                       " currentRssi=" + String(curRssi) +
+                       " channel=" + String(WiFi.channel(bestIdx)));
       String ssid, pass;
       if (loadSavedWiFiCredentials(ssid, pass) && ssid.length() > 0) {
         WiFi.disconnect();

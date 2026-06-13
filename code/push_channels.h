@@ -21,6 +21,8 @@ bool sendToChannel(const PushChannel& channel, const char* sender, const char* m
                   channel.type == PUSH_TYPE_CUSTOM);
   if (needUrl && channel.url.length() == 0) {
     appendPushDebugLog("跳过推送通道：缺少URL，类型=" + String(channel.type));
+    systemLog(LOG_LEVEL_WARN, LOG_MODULE_PUSH,
+              "channel config missing url type=" + String(channel.type));
     return false;
   }
 
@@ -29,8 +31,9 @@ bool sendToChannel(const PushChannel& channel, const char* sender, const char* m
   http.setConnectTimeout(8000);
   http.setTimeout(8000);
   String channelName = channel.name.length() > 0 ? channel.name : ("通道" + String(channel.type));
-  Serial.println("[Push] 发送到通道: " + channelName);
   appendPushDebugLog("准备发送到推送通道: " + channelName);
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_PUSH,
+                   "channel send start name=" + channelName + " type=" + String(channel.type));
 
   unsigned long t0 = millis();
 
@@ -127,6 +130,8 @@ bool sendToChannel(const PushChannel& channel, const char* sender, const char* m
               channelValue = channel.key2;
           } else {
               appendPushDebugLog("[" + channelName + "] PushPlus渠道无效，使用默认wechat: " + channel.key2);
+              systemLog(LOG_LEVEL_WARN, LOG_MODULE_PUSH,
+                        "channel " + channelName + " invalid pushplus channel=" + channel.key2);
           }
       }
       String jsonData = "{";
@@ -156,6 +161,8 @@ bool sendToChannel(const PushChannel& channel, const char* sender, const char* m
       // 自定义模板
       if (channel.customBody.length() == 0) {
         appendPushDebugLog("[" + channelName + "] 跳过：自定义模板为空");
+        systemLog(LOG_LEVEL_WARN, LOG_MODULE_PUSH,
+                  "channel " + channelName + " custom body empty");
         return false;
       }
       http.begin(channel.url);
@@ -249,6 +256,8 @@ bool sendToChannel(const PushChannel& channel, const char* sender, const char* m
 
     default:
       appendPushDebugLog("未知推送类型: " + String(channel.type));
+      systemLog(LOG_LEVEL_ERROR, LOG_MODULE_PUSH,
+                "unknown channel type=" + String(channel.type));
       return false;
   }
 
@@ -256,12 +265,16 @@ bool sendToChannel(const PushChannel& channel, const char* sender, const char* m
   bool ok = httpCode > 0;
   if (ok) {
     String response = http.getString();
-    Serial.println("[Push] 通道[" + channelName + "] 响应码=" + String(httpCode) + " 耗时=" + String(cost) + "ms");
     logPushResponse(channelName, httpCode, response);
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_PUSH,
+                     "channel send ok name=" + channelName + " code=" + String(httpCode) +
+                     " costMs=" + String(cost));
   } else {
     String err = http.errorToString(httpCode);
-    Serial.println("[Push] 通道[" + channelName + "] 失败=" + err + " 耗时=" + String(cost) + "ms");
     logPushResponse(channelName, httpCode, err);
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_PUSH,
+                     "channel send failed name=" + channelName + " err=" + err +
+                     " code=" + String(httpCode) + " costMs=" + String(cost));
   }
   http.end();
   return ok;
@@ -269,27 +282,35 @@ bool sendToChannel(const PushChannel& channel, const char* sender, const char* m
 
 // 发送短信到所有启用的推送通道（由网络后台任务调用，可安全阻塞）
 void sendSMSToServer(const char* sender, const char* message, const char* timestamp) {
-  Serial.println("[Push] 准备推送，发送者=" + String(sender));
   appendPushDebugLog("准备推送短信，发送者=" + String(sender) + "，时间=" + String(timestamp));
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_PUSH,
+                   "push request sender=" + String(sender) + " timestamp=" + String(timestamp));
 
   PushFilterEvalResult filterResult = evaluatePushFilter(currentPushFilterRule(), String(sender), String(message));
   if (!filterResult.valid || !filterResult.allowed) {
-    Serial.println("[Push] 过滤取消：" + filterResult.reason);
     appendPushDebugLog("推送过滤取消：" + filterResult.reason +
                        "，对象=" + filterResult.targetName +
                        "，方式=" + filterResult.modeName +
                        "，内容=" + filterResult.expr);
+    systemLogPrintln(filterResult.valid ? LOG_LEVEL_WARN : LOG_LEVEL_ERROR,
+                     LOG_MODULE_PUSH,
+                     "push filtered reason=" + filterResult.reason +
+                     " target=" + filterResult.targetName +
+                     " mode=" + filterResult.modeName +
+                     " expr=" + filterResult.expr);
     return;
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[Push] 取消：WiFi未连接(status=" + String((int)WiFi.status()) + ")");
     appendPushDebugLog("推送取消：WiFi未连接，状态=" + wifiStatusText(WiFi.status()));
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_PUSH,
+                     "push cancelled wifi status=" + wifiStatusText(WiFi.status()));
     return;
   }
   if (!ensureWiFiGatewayReachable("HTTP推送前检查", true)) {
-    Serial.println("[Push] 取消：WiFi网关不可达，已触发重连");
     appendPushDebugLog("推送取消：WiFi网关不可达，已触发重连");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_PUSH,
+                     "push cancelled gateway unreachable");
     return;
   }
 
@@ -302,13 +323,14 @@ void sendSMSToServer(const char* sender, const char* message, const char* timest
   }
 
   if (!hasEnabledChannel) {
-    Serial.println("[Push] 取消：没有启用且配置完整的推送通道");
     appendPushDebugLog("推送取消：没有启用且配置完整的推送通道");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_PUSH,
+                     "push cancelled no valid channel");
     return;
   }
 
-  Serial.println("[Push] 开始多通道推送");
   appendPushDebugLog("开始多通道推送请求尝试");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_PUSH, "multi-channel push start");
   bool anySuccess = false;
   for (int i = 0; i < MAX_PUSH_CHANNELS; i++) {
     if (isPushChannelValid(config.pushChannels[i])) {
@@ -318,6 +340,8 @@ void sendSMSToServer(const char* sender, const char* message, const char* timest
       delay(100); // 短暂延迟避免请求过快
     }
   }
-  Serial.println("[Push] 多通道推送完成，是否有成功=" + String(anySuccess ? "是" : "否"));
   appendPushDebugLog("多通道推送请求尝试完成");
+  systemLogPrintln(anySuccess ? LOG_LEVEL_INFO : LOG_LEVEL_ERROR,
+                   LOG_MODULE_PUSH,
+                   "multi-channel push done success=" + String(anySuccess ? "yes" : "no"));
 }

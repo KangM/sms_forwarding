@@ -1,49 +1,58 @@
 # 低成本短信转发器复刻指南
 
-这是一个基于 ESP32-S3 SuperMini 和蜂窝通信模组的短信转发器。设备接入 WiFi 后，会通过串口控制 4G 模组接收短信，并把短信转发到邮箱、HTTP 接口或常见机器人推送服务。项目也提供 Web 管理页面，可配置通知通道、查看短信、发送短信、查询模组状态和调试 AT 指令。
+这是一个基于 ESP32 SuperMini 和 4G 短信模组的短信转发器。设备通过 UART 控制蜂窝模组接收短信，再通过 WiFi 把短信转发到邮箱、HTTP 接口或常见机器人推送服务，同时提供一个 Web 管理页面用于配置、调试和排障。
 
-当前代码默认适配 `ESP32-S3 SuperMini + ML307R-DC` 这类支持 AT 指令的蜂窝模组组合。旧的 ESP32-C3 接线方案仅作为历史参考，不是当前主线。
-未额外指定编译宏时，固件默认按 ESP32-S3 SuperMini 引脚编译；如需构建 ESP32-C3 版本，可在构建参数中定义 `SMS_BOARD_C3`。
+当前仓库已经支持两套主控板：
 
-## 功能概览
+- `ESP32-S3 SuperMini`
+- `ESP32-C3 SuperMini`
 
-- 接收短信并自动转发。
-- 支持 PDU 短信解析，支持中文短信。
-- 支持长短信自动合并，默认最长等待 30 秒。
-- 支持最多 5 个推送通道同时启用。
-- 支持邮箱通知。
-- 支持 Web 页面配置 WiFi、通知通道、管理员号码和号码黑名单。
-- 支持 Web 页面主动发送短信。
-- 支持查看模组短信存储中的短信列表。
-- 支持查询固件信息、信号质量、SIM 卡信息、网络状态、WiFi 状态。
-- 支持 Ping 测试，用极少量流量验证移动网络，可自定义目标地址和包大小。
-- 支持飞行模式切换和查询。
-- 支持 Web 页面发送 AT 指令进行调试。
-- 支持管理员短信命令远程发送短信和重启设备。
-- 支持掉线检测：按固定间隔向指定 URL 发起 HTTP 请求，可用于外部监控设备是否在线。
-- 支持板载 LED 状态指示，不同运行阶段显示不同状态（S3 用颜色，C3 用闪烁节奏）。
-- 模组短信默认存储在模块内部 `ME`，减少占用 SIM 卡短信容量。
-- 上电后会执行 `AT+CGACT=0,1` 禁用数据连接，降低误跑流量的风险。
+默认编译目标是 `ESP32-S3 SuperMini`。如需切换到 C3，需要在构建参数中定义 `SMS_BOARD_C3`，或直接使用仓库里的脚本参数。
+
+## 主要功能
+
+- 接收短信并自动转发
+- 支持 PDU 短信解析，支持中文短信
+- 支持长短信自动拼接
+- 支持短信列表查看与逐条读取 PDU
+- 支持最多 5 个推送通道同时启用
+- 支持 SMTP 邮件通知
+- 支持全局推送过滤规则和页面内规则测试
+- 支持管理员短信命令远程发短信、重启设备
+- 支持号码黑名单
+- 支持掉线检测 KeepAlive
+- 支持 WiFi 可达性诊断、自动重连、完整 WiFi reset
+- 支持串口命令台排障
+- 支持运行时日志与 Flash 错误上下文日志
+- 支持板载 LED 状态提示
 
 ## 需要购买的硬件
 
-最低复刻需要以下硬件：
+最低复刻建议准备：
 
 | 硬件 | 建议 | 说明 |
 | --- | --- | --- |
-| 主控开发板 | ESP32-S3 SuperMini | 代码默认使用 ESP32-S3，串口引脚为 GPIO43/GPIO44。 |
-| 蜂窝通信模组 | ML307R-DC 开发板或兼容 AT 指令的 4G 短信模组 | 需要支持 UART AT 指令、PDU 短信模式和短信上报。 |
-| 4G 天线 | 与模组接口匹配的 FPC 或棒状天线 | 没有天线会明显影响注册网络和短信收发。 |
-| Nano SIM 卡 | 移动、联通或电信卡，视模组频段支持而定 | 建议先用手机确认 SIM 卡能正常收发短信。 |
-| 杜邦线 | 若干 | 用于连接 UART、供电和 EN 控制脚。 |
-| USB 数据线 | 支持数据传输 | 用于给 ESP32-S3 烧录和串口日志调试。 |
-| 稳定 5V 电源 | 可选但推荐 | 蜂窝模组发射瞬间电流较高，电脑 USB 口不稳定时建议外接供电。 |
+| 主控开发板 | ESP32-S3 SuperMini 或 ESP32-C3 SuperMini | 当前仓库两者都支持，默认以 S3 为主 |
+| 蜂窝模组 | ML307R-DC 或其它支持 AT 指令的 4G 短信模组 | 需要支持 UART、PDU 模式、短信到达上报 |
+| 4G 天线 | 与模组接口匹配 | 没有天线会影响驻网和短信收发 |
+| Nano SIM 卡 | 可正常收发短信的卡 | 先用手机验证短信功能正常 |
+| 杜邦线 | 若干 | 用于 UART、EN、供电接线 |
+| USB 数据线 | 支持数据传输 | 用于烧录和串口监视 |
+| 稳定 5V 电源 | 推荐 | 模组发射瞬间电流较高，弱 USB 口容易出问题 |
 
-如果购买的是已经把 ESP32 和 4G 模组集成在一起的成品板，也可以使用本固件，但需要核对该板子的 UART 和 EN 引脚，并同步修改 [code/pins.h](./code/pins.h)。
+## 接线方法
 
-## 硬件接线
+当前引脚定义见 [code/pins.h](D:/文档/CodeWork/sms_forwarding/code/pins.h)。
 
-当前默认引脚定义在 [code/pins.h](./code/pins.h)：
+### 方案一：ESP32-S3 SuperMini
+
+默认宏：
+
+```cpp
+#define SMS_BOARD_S3
+```
+
+默认引脚：
 
 ```cpp
 #define TXD 43
@@ -51,46 +60,75 @@
 #define MODEM_EN_PIN 5
 ```
 
-按照下表接线：
+接线表：
 
-| ESP32-S3 SuperMini | ML307R-DC / 4G 模组 | 说明 |
+| ESP32-S3 SuperMini | 4G 模组 | 说明 |
 | --- | --- | --- |
-| GPIO43 / TX | RX | ESP32-S3 向模组发送 AT 指令。 |
-| GPIO44 / RX | TX | ESP32-S3 接收模组返回和短信上报。 |
-| GPIO5 | EN | 控制模组断电/上电重启。 |
-| 5V | VCC / 5V | 给模组供电。 |
-| GND | GND | 必须共地。 |
+| GPIO43 / TX | RX | 向模组发送 AT 指令 |
+| GPIO44 / RX | TX | 接收模组响应和短信上报 |
+| GPIO5 | EN | 控制模组断电/上电 |
+| 5V | 5V / VCC | 模组供电 |
+| GND | GND | 必须共地 |
 
-注意事项：
+补充说明：
 
-- TX/RX 必须交叉连接：ESP32 的 TX 接模组 RX，ESP32 的 RX 接模组 TX。
-- ESP32 和模组必须共地，否则串口通信会不稳定。
-- 如果烧录失败，可以先断开模组的 TX/RX，烧录完成后再接回并重启。
-- 模组 EN 不建议直接短接到高电平，当前代码会通过 GPIO5 对模组做上电复位。
-- 插入 Nano SIM 卡并接好 4G 天线后再上电测试。
+- S3 板载 RGB 灯使用 `GPIO48`，不要拿它去接模组控制脚
+- 当前项目默认就是按这套 S3 接线编译
 
-## Arduino IDE 环境准备
+### 方案二：ESP32-C3 SuperMini
 
-### 1. 安装 ESP32 开发板支持
+默认宏：
 
-在 Arduino IDE 中安装 Espressif 的 ESP32 开发板包。当前构建记录使用的是：
+```cpp
+#define SMS_BOARD_C3
+```
+
+默认引脚：
+
+```cpp
+#define TXD 3
+#define RXD 4
+#define MODEM_EN_PIN 5
+```
+
+接线表：
+
+| ESP32-C3 SuperMini | 4G 模组 | 说明 |
+| --- | --- | --- |
+| GPIO3 / TXD | RX | 向模组发送 AT 指令 |
+| GPIO4 / RXD | TX | 接收模组响应和短信上报 |
+| GPIO5 | EN | 控制模组断电/上电 |
+| 5V | 5V / VCC | 模组供电 |
+| GND | GND | 必须共地 |
+
+补充说明：
+
+- C3 板载单色 LED 在 `GPIO8`
+- 当前代码里的 C3 就是这套接法，不需要你再自己猜引脚
+
+### 通用接线注意事项
+
+- UART 必须交叉连接：`TX -> RX`，`RX -> TX`
+- 主控和模组必须共地
+- 模组 EN 建议接到 ESP32 控制脚，不要直接常高
+- 烧录有冲突时，可以临时断开模组 TX/RX，烧完再接回
+
+## Arduino IDE 设置
+
+### 1. 安装 ESP32 平台
+
+建议使用：
 
 ```text
 esp32 by Espressif Systems 3.3.10
 ```
 
-其它 3.x 版本通常也可以使用。如果遇到编译差异，优先使用 3.3.10 或接近版本。
-
 ### 2. 安装依赖库
 
-在 Arduino IDE 的 Library Manager 中安装：
+在 Library Manager 中安装：
 
-| 库 | 作者 | 用途 |
-| --- | --- | --- |
-| ReadyMail | Mobizt | SMTP 邮件通知。 |
-| pdulib | David Henry | PDU 短信编码和解码。 |
-
-ESP32 核心自带的 `WiFi`、`WebServer`、`Preferences`、`HTTPClient`、`NetworkClientSecure` 等库不需要单独安装。
+- `pdulib`
+- `ReadyMail`
 
 ### 3. 打开工程
 
@@ -100,80 +138,107 @@ ESP32 核心自带的 `WiFi`、`WebServer`、`Preferences`、`HTTPClient`、`Net
 code/code.ino
 ```
 
-不要只打开单个 `.h` 文件。主程序会自动包含同目录下的其它头文件。
+### 4. 开发板设置
 
-### 4. 选择开发板和编译选项
+#### ESP32-S3 SuperMini
 
-推荐配置如下：
-
-| Arduino IDE 选项 | 推荐值 |
+| 选项 | 推荐值 |
 | --- | --- |
 | Board | `ESP32S3 Dev Module` |
 | USB CDC On Boot | `Enabled` |
-| CPU Frequency | `240MHz (WiFi)` |
 | Flash Size | `4MB (32Mb)` |
-| Partition Scheme | `Huge APP (3MB No OTA/1MB SPIFFS)` 或同类 Huge APP / No OTA 方案 |
-| PSRAM | `Disabled`，除非你的板子明确带 PSRAM |
-| Upload Speed | `921600`，不稳定时改为 `460800` 或 `115200` |
-| Port | 选择 ESP32-S3 对应串口 |
-| Serial Monitor Baud | `115200` |
+| Partition Scheme | `Huge APP` |
+| PSRAM | `Disabled` |
+| Upload Speed | `921600`，不稳就降 |
 
-建议首次烧录或修改分区方案后启用：
+#### ESP32-C3 SuperMini
 
-```text
-Tools -> Erase All Flash Before Sketch Upload -> Enabled
+| 选项 | 推荐值 |
+| --- | --- |
+| Board | `ESP32C3 Dev Module` |
+| USB CDC On Boot | `Enabled` |
+| Flash Size | `4MB (32Mb)` |
+| Partition Scheme | `Huge APP` |
+| Upload Speed | `921600`，不稳就降 |
+
+### 5. 编译宏
+
+如果你直接在 Arduino IDE 里编译：
+
+- S3：默认即可
+- C3：需要额外定义 `SMS_BOARD_C3`
+
+如果你的 IDE 不方便加宏，建议直接使用下面的 PowerShell 脚本。
+
+## PowerShell 一键脚本
+
+仓库根目录提供：
+
+- [build-flash-monitor-s3.ps1](D:/文档/CodeWork/sms_forwarding/build-flash-monitor-s3.ps1)
+
+虽然文件名还带 `s3`，但现在已经同时支持 S3 和 C3。
+
+### 默认行为
+
+```powershell
+.\build-flash-monitor-s3.ps1
 ```
 
-这会清空设备中已保存的 WiFi、Web 密码、邮箱和推送通道配置。烧录完成并配置正常后，可以再改回 Disabled。
+含义：
 
-## 烧录和首次启动
+- 默认编译 `ESP32-S3 SuperMini`
+- 默认串口 `COM6`
+- 执行 `编译 -> 烧录 -> 打开带时间戳的串口监视器`
 
-1. 按照接线表连接 ESP32-S3 和模组。
-2. 插入 SIM 卡，接好 4G 天线。
-3. 用 USB 数据线连接 ESP32-S3 到电脑。
-4. 在 Arduino IDE 中打开 [code/code.ino](./code/code.ino)。
-5. 按上面的参数选择开发板和工具菜单选项。
-6. 点击 Upload 烧录。
-7. 打开 Serial Monitor，波特率选择 `115200`。
-8. 等待串口输出模组 AT 响应、短信模式配置、网络注册和 WiFi 状态。
+### 常用示例
 
-设备启动时会依次做这些事情：
+```powershell
+.\build-flash-monitor-s3.ps1 -Port COM6
+.\build-flash-monitor-s3.ps1 -Board C3 -Port COM7
+.\build-flash-monitor-s3.ps1 -Board C3 -Port COM7 -Clean
+.\build-flash-monitor-s3.ps1 -Monitor -Port COM6
+.\build-flash-monitor-s3.ps1 -Help
+```
 
-- 初始化 USB 串口日志。
-- 初始化与模组通信的 `Serial1`，波特率 `115200`。
-- 通过 GPIO5 对模组执行断电重启。
-- 等待模组 `AT` 响应。
-- 禁用数据连接，降低误耗流量风险。
-- 设置短信存储为模块内部 `ME`。
-- 开启短信到达上报。
-- 切换到 PDU 模式。
-- 等待 4G 网络注册。
-- 连接已保存 WiFi，或启动 WiFi 配网页面。
-- 启动 Web 管理服务，默认 HTTP 端口为 80。
+## 首次启动流程
+
+设备上电后大致会做这些事：
+
+- 初始化串口日志
+- 初始化 `Serial1`
+- 拉低/拉高 EN，对模组做一次干净重启
+- 等待 `AT` 响应
+- 执行 `AT+CGACT=0,1`，先禁用数据连接
+- 设置短信存储到模块内部 `ME`
+- 设置 `AT+CNMI=2,1,0,0,0`
+- 设置 `AT+CMGF=0` 进入 PDU 模式
+- 等待蜂窝网络注册
+- 连接 WiFi，或进入 WiFi 配网模式
+- 启动 Web 服务
 
 ## WiFi 配网
 
-如果设备没有保存过 WiFi，或连接失败，会自动开启开放热点：
+如果没有可用 WiFi，设备会启动开放热点：
 
 ```text
 SMS-Setup-xxxxxx
 ```
 
-连接这个热点后，浏览器访问：
+连接后访问：
 
 ```text
 http://192.168.4.1/wifi
 ```
 
-也可以直接打开任意网页，设备会尝试重定向到配网页面。选择或填写 WiFi 名称和密码后保存，设备会自动重启并尝试连接。
+保存 WiFi 后设备会自动重启并尝试连接。
 
-连接成功后，从串口监视器查看设备 IP，然后访问：
+## Web 管理页面
+
+默认地址：
 
 ```text
 http://设备IP/
 ```
-
-## Web 管理页面
 
 默认账号密码：
 
@@ -182,187 +247,216 @@ http://设备IP/
 密码：admin123
 ```
 
-首次进入后请立刻修改默认密码。
+建议首次进入后立刻修改。
 
 主要页面：
 
 | 页面 | 地址 | 用途 |
 | --- | --- | --- |
-| 系统配置 | `/` | 配置 Web 账号、邮箱、推送通道、管理员号码、黑名单。 |
-| 工具箱 | `/tools` | 发送短信、查看短信、查询模组状态、Ping、飞行模式、AT 调试。 |
-| WiFi 配网 | `/wifi` | 修改或重新保存 WiFi。 |
+| 系统配置 | `/` | 配置 Web、邮箱、推送、黑名单、管理员号码等 |
+| 工具箱 | `/tools` | 短信发送、短信列表、AT 调试、模组查询、Ping 等 |
+| WiFi 配网 | `/wifi` | 修改 WiFi |
 
-## 通知通道
+## 推送与过滤
 
-短信到达后，设备会同时尝试所有配置完整且已启用的通知通道。至少需要配置完整的邮箱通知，或启用一个有效推送通道。
+支持的推送类型包括：
 
-支持的推送类型：
+- POST JSON
+- Bark
+- GET 请求
+- 钉钉机器人
+- PushPlus
+- Server 酱
+- 自定义模板
+- 飞书机器人
+- Gotify
+- Telegram Bot
 
-| 类型 | 需要填写 | 说明 |
-| --- | --- | --- |
-| POST JSON | URL | POST `{"sender":"...","message":"...","timestamp":"..."}`。 |
-| Bark | URL | POST `{"title":"发送者号码","body":"短信内容"}`。 |
-| GET 请求 | URL | 自动追加 `sender`、`message`、`timestamp` 参数。 |
-| 钉钉机器人 | Webhook，可选 Secret | 支持加签。 |
-| PushPlus | Token，可选 URL 和发送渠道 | URL 留空时使用默认接口；渠道支持 `wechat`、`extension`、`app`。 |
-| Server 酱 | SendKey，可选 URL | URL 留空时使用默认接口。 |
-| 自定义模板 | URL 和请求体模板 | 模板可使用 `{sender}`、`{message}`、`{timestamp}`。 |
-| 飞书机器人 | Webhook，可选 Secret | 支持签名。 |
-| Gotify | 服务器 URL 和应用 Token | 向 Gotify 应用推送消息。 |
-| Telegram Bot | Chat ID 和 Bot Token，可选 API URL | URL 留空时使用 Telegram 官方 API。 |
+### 推送过滤
 
-工具箱中的“推送测试与调试”可以打开推送日志、发送测试推送、查看 HTTP 请求体和响应内容。
+当前支持一套全局过滤规则：
 
-## 邮箱通知
+- 匹配对象：`发信号码` / `短信内容`
+- 匹配方式：`包含` / `不包含` / `开头` / `结尾`
+- 表达式支持：
+  - `A&&B`
+  - `A||B`
 
-邮箱通知需要填写：
+限制：
 
-- SMTP 服务器，例如 `smtp.qq.com`。
-- SMTP 端口，常见 SSL 端口为 `465`。
-- 发件邮箱账号。
-- 邮箱密码或授权码。
-- 收件邮箱地址。
+- 不支持正则
+- 不支持混用 `&&` 和 `||`
+- 默认大小写敏感
 
-设备启动且通知配置有效时，会发送一封启动通知邮件。收到短信时，也会发送邮件通知。
+页面里还提供了“测试规则”功能，可以直接输入测试号码和短信内容，验证当前规则是否会放行，不会真的发推送。
+
+## 短信列表
+
+短信列表现在不是一次把大段 `CMGL` 内容全搬进内存，而是：
+
+- 先扫描索引
+- 页面只显示最近若干条
+- 逐条用 `CMGR` 读取
+- 前端负责 PDU 解码显示
+
+这样更适合长短信和短信较多的场景，也更不容易把 ESP32 栈和堆打爆。
+
+## 串口命令台
+
+串口监视器除了看日志，还可以直接输入命令排障。
+
+常用命令：
+
+```text
+HELP
+STATUS
+PINGGW
+DNS <host>
+TCP <host> [port]
+HTTP <url>
+KADEBUG
+KAAUTO [ON|OFF]
+LOG
+LOG 100
+LOG FLASH
+LOG FLASH PREV
+LOG FLASH CLEAR
+LOGTIME [ON|OFF]
+RECONNECT
+WIFIRESET
+MODEMRESET
+PERF
+PERFRESET [seconds]
+AT+...
+```
+
+说明：
+
+- `STATUS`：看运行状态、WiFi 信息、网关 Ping、片内温度
+- `WIFIRESET`：完整重建 WiFi
+- `KADEBUG`：对当前 KeepAlive 目标做深度诊断
+- `AT+...`：整行转发到模组
+- `LOGTIME OFF`：串口输出日志不带设备 uptime 前缀，避免和监视器自己的时间戳混在一起
+
+## 日志系统
+
+目前日志分两层：
+
+### Runtime Log
+
+- 存在 RAM 环形缓冲区
+- 默认容量 `200` 条
+- 记录的是最近运行日志
+- 时间格式是设备运行时间，例如：
+
+```text
+[00:05:23] [INFO] [KEEPALIVE] request ok code=200 cost=1379ms
+```
+
+### Flash Log
+
+- 默认不全量落盘
+- 只有遇到 `ERROR` 才触发错误上下文保存
+- 保存内容包括：
+  - 错误前最近若干条
+  - 错误本身
+  - 错误后的后续日志
+
+当前 Flash Log 规则：
+
+- 单个活动日志文件最大 `65536` 字节
+- 文件路径：
+  - `/syslog.log`
+  - `/syslog.prev.log`
+- 新错误上下文开始前会预留一块空间，尽量让一次错误上下文写在同一个文件里
+- Flash Log 优先写真实时间；如果 NTP 还没同步成功，则回退成 `uptime HH:MM:SS`
+
+## KeepAlive 与网络恢复
+
+KeepAlive 现在不只是定时访问 URL，还带这些保护：
+
+- 请求前先检查网关可达性
+- WiFi 假在线时能触发重连
+- 支持故障期加速复查
+- 支持自动深度诊断
+- 支持串口手动触发排障
+
+这套机制的目标是尽量把“WiFi 还显示连接，但实际上已经不通”的情况尽早识别出来。
 
 ## 管理员短信命令
 
-在系统配置中填写管理员手机号后，该号码发来的特定短信会被识别为远程命令。
-
-支持命令：
+支持：
 
 ```text
 SMS:目标号码:短信内容
-```
-
-向指定号码发送短信。
-
-```text
 RESET
 ```
 
-重启 4G 模组和 ESP32。
+含义：
 
-管理员号码比较时会兼容 `+86` 前缀，例如 `+8613800138000` 和 `13800138000` 会视为同一个号码。
+- `SMS:...`：用模组代发短信
+- `RESET`：重启模组并重启 ESP32
 
-## 号码黑名单
-
-系统配置页面可以填写号码黑名单，每行一个号码。来自黑名单号码的短信会被忽略，不会触发邮件或推送。
-
-同样兼容 `+86` 前缀匹配。
-
-## 掉线检测
-
-系统配置页面提供“掉线检测”功能，开启后设备会通过 WiFi 按固定间隔向指定 URL 发起 HTTP 请求，可配合外部监控服务（如 UptimeKuma 的 Push 监控、自建心跳接口等）判断设备是否在线。
-
-可配置项：
-
-| 配置 | 说明 |
-| --- | --- |
-| 功能开关 | 默认关闭。 |
-| 请求 URL | 要请求的地址。 |
-| 请求方式 | `GET` 或 `POST`。 |
-| 请求内容 | `POST` 时作为请求体发送，`Content-Type` 为 `application/json`。 |
-| 间隔时间 | 单位秒，默认 5 秒，最小 1 秒。 |
-
-开启并连接 WiFi 后，设备会先立即发起一次请求，之后按设定间隔重复执行。
-
-## LED 状态指示
-
-板载 LED 会根据设备运行阶段显示不同状态，方便在没有串口的情况下判断设备处于哪个环节。ESP32-S3 SuperMini 板载的是 GP48 上的 WS2812 RGB 灯，用颜色区分状态；ESP32-C3 SuperMini 板载的是 GP8 单色 LED，用闪烁节奏区分。
-
-| 阶段 | 含义 | S3 颜色 | 闪烁节奏 |
-| --- | --- | --- | --- |
-| 上电初始化 | 系统启动中 | 白 | 常亮 |
-| 模组初始化 | 配置 4G 模组 | 紫 | 慢闪 |
-| 等待网络注册 | 等待蜂窝网络 | 蓝 | 慢闪 |
-| WiFi 连接中 | 正在连接 WiFi | 青 | 快闪 |
-| 配网门户 | 已开启配网热点 | 黄 | 双闪 |
-| 配置无效 | 没有可用的通知通道 | 红 | 快闪 |
-| 正常待机 | 运行中 | 绿 | 心跳（每 3 秒短闪一次） |
-| 转发短信中 | 正在推送/发邮件 | 亮绿 | 常亮 |
-
-> 提示：板上的 BATTERY LED 由充电管理芯片直连，仅反映电池充电状态，无法由程序控制。纯 USB / 外部供电且未接电池时该灯可能持续闪烁，属于正常现象。
+管理员号码比对兼容 `+86` 前缀。
 
 ## 常见问题
 
-### 烧录失败
+### 1. 烧录失败
 
-- 确认 Arduino IDE 选择的是 `ESP32S3 Dev Module`。
-- 确认 USB 线支持数据传输。
-- 降低 Upload Speed 到 `460800` 或 `115200`。
-- 临时断开模组 TX/RX，烧录完成后再接回。
-- 必要时按住开发板 BOOT 键再开始烧录。
+- 降低 Upload Speed
+- 断开模组 TX/RX 再烧
+- 确认数据线支持传输
+- 必要时按住 BOOT 再烧录
 
-### 串口一直显示 AT 未响应
+### 2. 串口一直显示 AT 未响应
 
-- 检查模组供电是否稳定。
-- 检查 GND 是否共地。
-- 检查 TX/RX 是否交叉连接。
-- 检查 EN 是否接到 ESP32-S3 的 GPIO5。
-- 确认模组 AT 串口波特率为 `115200`。
+- 检查供电
+- 检查共地
+- 检查 UART 交叉连接
+- 检查 EN 是否接对
+- 确认模组 AT 波特率是 `115200`
 
-### 等待网络注册很久
+### 3. 等待网络注册很久
 
-- 确认 SIM 卡未欠费，且能正常收发短信。
-- 确认天线已接好。
-- 换到信号更好的位置。
-- 使用工具箱查询信号质量和网络状态。
-- 确认模组支持当前运营商频段。
+- 检查 SIM 卡
+- 检查天线
+- 换信号更好的位置
+- 在工具页查询信号质量和网络状态
 
-### Web 页面打不开
+### 4. 收到短信但没转发
 
-- 从串口监视器确认设备 IP。
-- 确认电脑或手机与设备在同一个 WiFi 网络。
-- 如果刚清空 WiFi 或连接失败，连接 `SMS-Setup-xxxxxx` 热点并访问 `http://192.168.4.1/wifi`。
-
-### 收到短信但没有推送
-
-- 确认设备 WiFi 已连接。
-- 确认至少配置了一个完整的邮箱或推送通道。
-- 在 `/tools` 中开启推送日志，并点击“测试推送”查看响应码和响应内容。
-- 如果使用钉钉、飞书等加签服务，确认 Secret 填写正确。
-
-## 修改引脚或适配其它开发板
-
-如果你的 ESP32-S3 板子 UART 引脚不同，修改 [code/pins.h](./code/pins.h)：
-
-```cpp
-#define TXD 43
-#define RXD 44
-#define MODEM_EN_PIN 5
-```
-
-修改后重新编译烧录，并按新的引脚接线。
-
-如果更换为 ESP32-C3 或其它 ESP32 板卡，还需要在 Arduino IDE 中选择对应开发板，并确认可用串口引脚、启动脚限制和板载 LED 引脚。
+- 检查 WiFi 是否已连接
+- 检查通知通道是否配置完整
+- 检查是否被黑名单或推送过滤规则拦截
+- 用 `/tools` 里的推送调试与规则测试定位
 
 ## 项目结构
 
 ```text
 code/
-  code.ino                  主程序入口
-  pins.h                    ESP32-S3 与模组的引脚定义
-  config_types.h            配置结构和推送通道类型
-  config_core.h             配置保存、加载和校验
-  wifi_provision.h          WiFi 配网门户
-  push_channels.h           多通道推送实现
-  email_notify.h            邮件通知
-  sms_receive.h             短信接收和 PDU 解析
-  sms_concat.h              长短信合并
-  modem_sms_control.h       短信发送、模组重启、管理员命令
-  keep_alive.h              掉线检测（定时 HTTP 请求）
-  led_indicator.h           跨板 LED 状态指示
-  web_pages.h               Web 页面模板
-  web_*_handler.h           Web 请求处理
-assets/                     README 使用的图片资源
-archive/                    旧文档归档
+  code.ino
+  pins.h
+  logger.h
+  keep_alive.h
+  wifi_provision.h
+  modem_sms_control.h
+  sms_receive.h
+  sms_concat.h
+  push_channels.h
+  serial_console.h
+  diagnostics_utils.h
+  config_core.h
+  web_*_handler.h
+docs/
+  board-pin-reference.md
+archive/
+  README.legacy-20260612.md
+build-flash-monitor-s3.ps1
 ```
 
 ## 安全提醒
 
-- Web 管理默认密码必须修改。
-- 不要把公网端口直接暴露到设备 Web 管理页面。
-- 自定义推送 URL、邮箱授权码、Bot Token 都属于敏感信息。
-- AT 指令调试入口能力很强，只应在可信局域网内使用。
-- Ping 和部分网络测试会消耗少量 SIM 卡流量。
+- 默认 Web 密码一定要改
+- 不要把管理页面直接暴露到公网
+- Bot Token、SMTP 授权码、推送 URL 都是敏感信息
+- AT 调试能力很强，只建议在可信局域网内使用

@@ -38,7 +38,7 @@ bool enqueueNotifyJob(NotifyJob* job) {
     return false;
   }
   if (xQueueSend(notifyQueue, &job, 0) != pdTRUE) {
-    Serial.println("[Net] 通知队列已满，丢弃任务");
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_SYSTEM, "notify queue full, drop job");
     delete job;
     return false;
   }
@@ -98,7 +98,7 @@ static void processNotifyJob(NotifyJob* job) {
 }
 
 void netTask(void* param) {
-  Serial.println("[Net] 网络任务已启动");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "network task started");
   for (;;) {
     NotifyJob* job = nullptr;
     // 等待通知任务，最多阻塞 200ms，以便周期性执行掉线检测
@@ -118,7 +118,7 @@ void startNetTask() {
   notifyQueue = xQueueCreate(NOTIFY_QUEUE_LEN, sizeof(NotifyJob*));
   configMutex = xSemaphoreCreateMutex();
   if (!notifyQueue || !configMutex) {
-    Serial.println("[Net] 队列或互斥锁创建失败，网络任务未启动");
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_SYSTEM, "queue or mutex creation failed, net task not started");
     return;
   }
   // 栈 8KB；HTTPS/TLS 较吃栈。不绑定核心，单核(C3)/双核(S3)均可。

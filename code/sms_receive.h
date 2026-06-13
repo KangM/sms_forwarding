@@ -38,24 +38,27 @@ bool isHexString(const String& str) {
 // 处理最终的短信内容（管理员命令检查和转发）
 void processSmsContent(const char* sender, const char* text, const char* timestamp) {
   String formattedTimestamp = formatSmsTimestamp(String(timestamp));
-  Serial.println("=== 处理短信内容 ===");
-  Serial.println("发送者: " + String(sender));
-  Serial.println("时间戳: " + formattedTimestamp);
-  Serial.println("内容: " + String(text));
-  Serial.println("====================");
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                      "process sms detail sender=" + String(sender) +
+                      " timestamp=" + formattedTimestamp +
+                      " text=" + String(text));
   if (pushDebugEnabled) {
     printWiFiDiagnostics("短信到达");
   }
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                   "process sms sender=" + String(sender) + " timestamp=" + formattedTimestamp);
 
   // 检查是否在号码黑名单中
   if (isInNumberBlackList(sender)) {
-    Serial.println("发送者在号码黑名单中，忽略该短信");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SMS,
+                     "sms ignored by blacklist sender=" + String(sender));
     return;
   }
 
   // 检查是否为管理员命令
   if (isAdmin(sender)) {
-    Serial.println("收到管理员短信，检查命令...");
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                     "admin sms detected sender=" + String(sender));
     String smsText = String(text);
     smsText.trim();
 
@@ -71,39 +74,46 @@ void processSmsContent(const char* sender, const char* text, const char* timesta
   ledSetState(LED_BUSY_PUSHING);
   enqueueSmsNotify(String(sender), String(text), formattedTimestamp);
   ledRestoreNormal();
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                   "sms enqueued sender=" + String(sender));
 }
 
 bool submitIncomingPdu(const String& pduLine, const String& source, int storageIndex) {
-  Serial.println("收到PDU数据来源: " + source + (storageIndex >= 0 ? ("，存储索引: " + String(storageIndex)) : ""));
-  Serial.println("收到PDU数据: " + pduLine);
-  Serial.println("PDU长度: " + String(pduLine.length()) + " 字符");
+  String storageIndexInfo = storageIndex >= 0 ? (" index=" + String(storageIndex)) : String("");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                   "incoming pdu source=" + source +
+                   storageIndexInfo +
+                   " len=" + String(pduLine.length()));
 
   if (!isHexString(pduLine)) {
-    Serial.println("PDU数据不是有效的十六进制字符串");
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_SMS,
+                     "invalid pdu hex source=" + source);
     return false;
   }
 
   if (!pdu.decodePDU(pduLine.c_str())) {
-    Serial.println("PDU解析失败！");
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_SMS,
+                     "pdu decode failed source=" + source);
     return false;
   }
-
-  Serial.println("PDU解析成功");
-  Serial.println("=== 短信内容 ===");
-  Serial.println("发送者: " + String(pdu.getSender()));
-  Serial.println("时间戳: " + String(pdu.getTimeStamp()));
-  Serial.println("内容: " + String(pdu.getText()));
 
   int* concatInfo = pdu.getConcatInfo();
   int refNumber = concatInfo[0];
   int partNumber = concatInfo[1];
   int totalParts = concatInfo[2];
 
-  Serial.printf("长短信信息: 参考号=%d, 当前=%d, 总计=%d\n", refNumber, partNumber, totalParts);
-  Serial.println("===============");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                   "pdu decode ok sender=" + String(pdu.getSender()) +
+                   " parts=" + String(partNumber) + "/" + String(totalParts) +
+                   " ref=" + String(refNumber));
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                      "pdu text timestamp=" + String(pdu.getTimeStamp()) +
+                      " text=" + String(pdu.getText()));
 
   if (totalParts > 1 && partNumber > 0) {
-    Serial.printf("收到长短信分段 %d/%d\n", partNumber, totalParts);
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                     "concat part received ref=" + String(refNumber) +
+                     " part=" + String(partNumber) + "/" + String(totalParts));
 
     int slot = findOrCreateConcatSlot(refNumber, pdu.getSender(), totalParts);
     int partIndex = partNumber - 1;
@@ -117,17 +127,21 @@ bool submitIncomingPdu(const String& pduLine, const String& source, int storageI
           concatBuffer[slot].timestamp = String(pdu.getTimeStamp());
         }
 
-        Serial.printf("  已缓存分段 %d，当前已收到 %d/%d\n",
-                     partNumber,
-                     concatBuffer[slot].receivedParts,
-                     totalParts);
+        systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                         "concat cached ref=" + String(refNumber) +
+                         " received=" + String(concatBuffer[slot].receivedParts) +
+                         "/" + String(totalParts));
       } else {
-        Serial.printf("  分段 %d 已存在，跳过\n", partNumber);
+        systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SMS,
+                         "concat duplicate ref=" + String(refNumber) +
+                         " part=" + String(partNumber));
       }
     }
 
     if (concatBuffer[slot].receivedParts >= totalParts) {
-      Serial.println("长短信已收齐，开始合并转发");
+      systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                       "concat assembled ref=" + String(refNumber) +
+                       " total=" + String(totalParts));
       String fullText = assembleConcatSms(slot);
       processSmsContent(concatBuffer[slot].sender.c_str(),
                        fullText.c_str(),
@@ -145,7 +159,9 @@ bool submitIncomingPdu(const String& pduLine, const String& source, int storageI
 
 bool readStoredSmsByIndex(int smsIndex) {
   String resp = sendATCommand(("AT+CMGR=" + String(smsIndex)).c_str(), 5000);
-  Serial.println("CMGR响应长度: " + String(resp.length()) + " 字符");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                   "read stored sms index=" + String(smsIndex) +
+                   " respLen=" + String(resp.length()));
 
   String pduLine = "";
   int lineStart = 0;
@@ -162,11 +178,13 @@ bool readStoredSmsByIndex(int smsIndex) {
   }
 
   if (pduLine.length() == 0) {
-    Serial.println("读取存储短信失败，索引: " + String(smsIndex));
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SMS,
+                     "read stored sms failed index=" + String(smsIndex));
     return false;
   }
 
-  Serial.println("读取存储短信成功，索引: " + String(smsIndex));
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                   "read stored sms ok index=" + String(smsIndex));
   bool messageReady = submitIncomingPdu(pduLine, "CMTI", smsIndex);
   if (messageReady) {
     cleanupSmsStorageReserve();
@@ -183,21 +201,23 @@ void checkSerial1URC() {
   if (line.length() == 0) return;
 
   // 打印到调试串口
-  Serial.println("Debug> " + line);
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_MODEM, "urc line=" + line);
 
   if (state == IDLE) {
     // 检测到短信上报URC头
     if (line.startsWith("+CMT:")) {
-      Serial.println("检测到+CMT，等待PDU数据...");
+      systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS, "urc +CMT detected");
       state = WAIT_PDU;
     } else if (line.startsWith("+CMTI:")) {
       int commaIdx = line.lastIndexOf(',');
       if (commaIdx >= 0) {
         int smsIndex = line.substring(commaIdx + 1).toInt();
-        Serial.println("检测到+CMTI，新短信索引: " + String(smsIndex));
+        systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                         "urc +CMTI detected index=" + String(smsIndex));
         readStoredSmsByIndex(smsIndex);
       } else {
-        Serial.println("检测到+CMTI，但无法解析索引: " + line);
+        systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SMS,
+                         "urc +CMTI parse failed line=" + line);
       }
     }
   } else if (state == WAIT_PDU) {
@@ -213,7 +233,8 @@ void checkSerial1URC() {
     }
     // 如果是其他内容（OK、ERROR等），也返回IDLE
     else {
-      Serial.println("收到非PDU数据，返回IDLE状态");
+      systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SMS,
+                       "expected pdu after +CMT but got line=" + line);
       state = IDLE;
     }
   }

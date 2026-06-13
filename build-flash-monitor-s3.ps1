@@ -1,56 +1,110 @@
 # build-flash-monitor-s3.ps1
-# All-in-one ESP32-S3 helper: compile -> upload -> interactive timestamped serial monitor.
-# Compile options match the ESP32-S3 settings in .github/workflows/build.yml.
+# All-in-one ESP32 SuperMini helper: compile -> upload -> interactive timestamped serial monitor.
+# Default target is ESP32-S3. Use -Board C3 to build/flash the ESP32-C3 variant.
 #
 # Examples:
+#   .\build-flash-monitor-s3.ps1
 #   .\build-flash-monitor-s3.ps1 -Port COM6
+#   .\build-flash-monitor-s3.ps1 -Board C3 -Port COM7
 #   .\build-flash-monitor-s3.ps1 -Port COM6 -Clean
 #   .\build-flash-monitor-s3.ps1 -Port COM6 -NoMonitor
 #   .\build-flash-monitor-s3.ps1 -Monitor -Port COM6
 #   .\build-flash-monitor-s3.ps1 -Help
 
 param(
+    [Alias("Board", "Target")]
+    [ValidateSet("S3", "C3")]
+    [string]$BoardType = "S3",
+    [Alias("p")]
     [string]$Port = "COM6",
+    [Alias("b")]
     [int]$Baud = 115200,
+    [Alias("c")]
     [switch]$Clean,
+    [Alias("nm")]
     [switch]$NoMonitor,
+    [Alias("m")]
     [switch]$Monitor,
+    [Alias("d")]
     [switch]$Dtr,
+    [Alias("r")]
     [switch]$Rts,
+    [Alias("n")]
     [switch]$Notify,
+    [Alias("nn")]
+    [switch]$NoNotify,
+    [Alias("h", "?")]
     [switch]$Help
 )
 
 $ErrorActionPreference = "Stop"
 
-$Fqbn = "esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=4M,PartitionScheme=huge_app,PSRAM=disabled"
-$BoardFlag = "-DSMS_BOARD_S3"
 $SketchDir = Join-Path $PSScriptRoot "code"
+
+$boardConfigs = @{
+    "S3" = @{
+        Name = "ESP32-S3 SuperMini"
+        ShortName = "S3"
+        Fqbn = "esp32:esp32:esp32s3:CDCOnBoot=cdc,UploadSpeed=115200,FlashSize=4M,PartitionScheme=huge_app,PSRAM=disabled"
+        BoardFlag = "-DSMS_BOARD_S3"
+        LogSuffix = "s3"
+    }
+    "C3" = @{
+        Name = "ESP32-C3 SuperMini"
+        ShortName = "C3"
+        Fqbn = "esp32:esp32:esp32c3:CDCOnBoot=cdc,UploadSpeed=115200,FlashSize=4M,PartitionScheme=huge_app"
+        BoardFlag = "-DSMS_BOARD_C3"
+        LogSuffix = "c3"
+    }
+}
+
+$boardConfig = $boardConfigs[$BoardType]
+$BoardDisplayName = $boardConfig.Name
+$BoardShortName = $boardConfig.ShortName
+$Fqbn = $boardConfig.Fqbn
+$BoardFlag = $boardConfig.BoardFlag
+$LogSuffix = $boardConfig.LogSuffix
 
 function Show-Usage {
     $scriptName = Split-Path -Leaf $PSCommandPath
     Write-Host @"
 Usage:
+  .\$scriptName
   .\$scriptName -Port COM6 [options]
+  .\$scriptName -Board C3 -Port COM7 [options]
+  .\$scriptName -p COM6 [options]
 
 Purpose:
-  Compile the ESP32-S3 firmware, upload it to the selected serial port,
-  then open an interactive timestamped serial monitor by default.
+  Compile the selected ESP32 SuperMini firmware, upload it to the selected
+  serial port, then open an interactive timestamped serial monitor by default.
+  Default board: ESP32-S3 SuperMini. Default port: COM6.
 
 Options:
-  -Port <COM port>   Target serial port, for example COM6. Default: COM6
-  -Baud <baud>       Serial monitor baud rate. Default: 115200
-  -Clean             Clean build cache before compiling
-  -NoMonitor         Do not open the serial monitor after upload
-  -Monitor           Only open the serial monitor; do not compile or upload
-  -Dtr               Assert DTR while monitoring. Default: off
-  -Rts               Assert RTS while monitoring. Default: off
-  -Notify            Show a local notification and play a sound on completion or failure
-  -Help              Show this help
+  -BoardType, -Board, -Target <S3|C3>
+                     Select the target board. Default: S3
+  -Port, -p <COM>    Target serial port, for example COM6. Default: COM6
+  -Baud, -b <baud>   Serial monitor baud rate. Default: 115200
+  -Clean, -c         Clean build cache before compiling
+  -NoMonitor, -nm    Do not open the serial monitor after upload
+  -Monitor, -m       Only open the serial monitor; do not compile or upload
+  -Dtr, -d           Assert DTR while monitoring. Default: off
+  -Rts, -r           Assert RTS while monitoring. Default: off
+  -Notify, -n        Force local notification on completion/failure
+  -NoNotify, -nn     Do not show the completion/failure notification
+  -Help, -h, -?      Show this help
 
 Examples:
+  .\$scriptName
+      Compile, upload, and monitor the default ESP32-S3 firmware on COM6.
+
   .\$scriptName -Port COM6
       Compile, upload to COM6, then open the interactive timestamped serial monitor.
+
+  .\$scriptName -Board C3 -Port COM7
+      Compile the ESP32-C3 firmware, upload it to COM7, then open the monitor.
+
+  .\$scriptName -p COM6 -c
+      Same as -Port/-Clean, but with the short aliases for faster typing.
 
   .\$scriptName -Port COM6 -Clean
       Clean all cached build output first, then compile, upload, and monitor.
@@ -61,12 +115,12 @@ Examples:
   .\$scriptName -Monitor -Port COM6
       Open only the interactive timestamped serial monitor. No compile or upload.
 
-  .\$scriptName -Port COM6 -Notify
-      Compile, upload, then show a local notification and play a sound.
+  .\$scriptName -Port COM6 -NoNotify
+      Compile, upload, and monitor without the local completion/failure notification.
 "@
 }
 
-if ($Help -or $PSBoundParameters.Count -eq 0) {
+if ($Help) {
     Show-Usage
     return
 }
@@ -79,7 +133,7 @@ function Send-LocalNotification {
         [string]$Level = "Info"
     )
 
-    if (-not $Notify) {
+    if ($NoNotify) {
         return
     }
 
@@ -269,6 +323,7 @@ function Start-SerialMonitor {
 }
 
 if ($Monitor) {
+    Write-Host ("=== Monitor only ({0}) ===" -f $BoardDisplayName) -ForegroundColor Green
     Start-SerialMonitor -PortName $Port -BaudRate $Baud -AssertDtr $Dtr.IsPresent -AssertRts $Rts.IsPresent
     return
 }
@@ -343,7 +398,7 @@ function Get-CompileUnitCount {
     return $null
 }
 
-Write-Host "=== Compile firmware (S3) ===" -ForegroundColor Green
+Write-Host ("=== Compile firmware ({0}) ===" -f $BoardShortName) -ForegroundColor Green
 
 $totalCompileUnits = Get-CompileUnitCount $compileArgs
 if ($totalCompileUnits) {
@@ -352,7 +407,7 @@ if ($totalCompileUnits) {
     Write-Host "Compile units: unknown" -ForegroundColor DarkGray
 }
 
-$logFile = Join-Path $env:TEMP "arduino-build-s3.log"
+$logFile = Join-Path $env:TEMP ("arduino-build-{0}.log" -f $LogSuffix)
 $logLines = New-Object System.Collections.Generic.List[string]
 $count = 0
 
@@ -387,20 +442,20 @@ Write-Host ""
 
 if ($exit -ne 0) {
     Write-Host "Compile failed. Full log: $logFile" -ForegroundColor Red
-    Send-LocalNotification -Title "SMS Forwarding build failed" -Message "Compile failed. Full log: $logFile" -Level Error
+    Send-LocalNotification -Title ("SMS Forwarding {0} build failed" -f $BoardShortName) -Message "Compile failed. Full log: $logFile" -Level Error
     exit $exit
 }
 Write-Host ("Compile complete. Compiled {0} files. Full log: {1}" -f $count, $logFile) -ForegroundColor Green
 
-Write-Host "`n=== Upload to $Port ===" -ForegroundColor Green
+Write-Host ("`n=== Upload {0} to {1} ===" -f $BoardShortName, $Port) -ForegroundColor Green
 & arduino-cli upload -p $Port --fqbn $Fqbn $SketchDir
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Upload failed." -ForegroundColor Red
-    Send-LocalNotification -Title "SMS Forwarding upload failed" -Message "Upload to $Port failed." -Level Error
+    Send-LocalNotification -Title ("SMS Forwarding {0} upload failed" -f $BoardShortName) -Message "Upload to $Port failed." -Level Error
     exit $LASTEXITCODE
 }
 Write-Host "Upload complete." -ForegroundColor Green
-Send-LocalNotification -Title "SMS Forwarding upload complete" -Message "Firmware uploaded to $Port successfully." -Level Success
+Send-LocalNotification -Title ("SMS Forwarding {0} upload complete" -f $BoardShortName) -Message "Firmware uploaded to $Port successfully." -Level Success
 
 if (-not $NoMonitor) {
     Start-Sleep -Milliseconds 800

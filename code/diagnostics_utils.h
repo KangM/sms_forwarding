@@ -42,6 +42,139 @@ String wifiStatusText(wl_status_t status) {
   }
 }
 
+String chipTemperatureLevelText(float celsius) {
+  if (isnan(celsius) || celsius < -40.0f || celsius > 125.0f) return "unavailable";
+  if (celsius < 55.0f) return "NORMAL";
+  if (celsius < 70.0f) return "WARM";
+  if (celsius < 85.0f) return "HOT";
+  return "VERY HOT";
+}
+
+String chipTemperatureStatusText() {
+  float celsius = temperatureRead();
+  String level = chipTemperatureLevelText(celsius);
+  if (level == "unavailable") return "unavailable";
+  return String(celsius, 1) + " C (" + level + ")";
+}
+
+struct ParsedWiFiDiagUrl {
+  bool valid;
+  String scheme;
+  String host;
+  uint16_t port;
+  String path;
+};
+
+bool parseUrlForWiFiDiagnostics(const String& url, ParsedWiFiDiagUrl& parsed) {
+  parsed = {};
+  int schemeSep = url.indexOf("://");
+  if (schemeSep <= 0) return false;
+
+  parsed.scheme = url.substring(0, schemeSep);
+  parsed.scheme.toLowerCase();
+
+  int hostStart = schemeSep + 3;
+  int pathStart = url.indexOf('/', hostStart);
+  String authority = pathStart >= 0 ? url.substring(hostStart, pathStart) : url.substring(hostStart);
+  parsed.path = pathStart >= 0 ? url.substring(pathStart) : "/";
+
+  if (authority.length() == 0) return false;
+  if (parsed.path.length() == 0) parsed.path = "/";
+
+  int colon = authority.lastIndexOf(':');
+  if (colon > 0 && authority.indexOf(']') < 0) {
+    parsed.host = authority.substring(0, colon);
+    parsed.port = (uint16_t)authority.substring(colon + 1).toInt();
+  } else {
+    parsed.host = authority;
+    parsed.port = parsed.scheme == "https" ? 443 : 80;
+  }
+
+  if (parsed.host.length() == 0 || parsed.port == 0) return false;
+  parsed.valid = true;
+  return true;
+}
+
+String resolveHostForWiFiDiagnostics(const String& host, IPAddress* resolvedIp = nullptr) {
+  if (WiFi.status() != WL_CONNECTED) return "失败（WiFi未连接）";
+  if (host.length() == 0) return "失败（host为空）";
+
+  IPAddress ip;
+  unsigned long t0 = millis();
+  int rc = WiFi.hostByName(host.c_str(), ip);
+  unsigned long cost = millis() - t0;
+  if (rc == 1) {
+    if (resolvedIp) *resolvedIp = ip;
+    return "成功（" + host + " -> " + ip.toString() + "，耗时" + String(cost) + "ms）";
+  }
+  return "失败（hostByName=" + String(rc) + "，耗时" + String(cost) + "ms）";
+}
+
+String tcpConnectForWiFiDiagnostics(const String& host, uint16_t port) {
+  if (WiFi.status() != WL_CONNECTED) return "失败（WiFi未连接）";
+  if (host.length() == 0 || port == 0) return "失败（host或port无效）";
+
+  IPAddress ip;
+  String dnsResult = resolveHostForWiFiDiagnostics(host, &ip);
+  if (!dnsResult.startsWith("成功")) {
+    return "失败（DNS未通过: " + dnsResult + "）";
+  }
+
+  WiFiClient client;
+  unsigned long t0 = millis();
+  bool ok = client.connect(ip, port);
+  unsigned long cost = millis() - t0;
+  if (ok) {
+    client.stop();
+    return "成功（" + ip.toString() + ":" + String(port) + "，耗时" + String(cost) + "ms）";
+  }
+  return "失败（" + ip.toString() + ":" + String(port) + "，耗时" + String(cost) + "ms）";
+}
+
+String httpProbeForWiFiDiagnostics(const String& url, const String& method = "GET", const String& body = "") {
+  if (WiFi.status() != WL_CONNECTED) return "失败（WiFi未连接）";
+  if (url.length() == 0) return "失败（URL为空）";
+
+  ParsedWiFiDiagUrl parsed;
+  if (!parseUrlForWiFiDiagnostics(url, parsed)) {
+    return "失败（URL格式无效）";
+  }
+
+  unsigned long t0 = millis();
+  int httpCode = 0;
+  HTTPClient http;
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+
+  if (parsed.scheme == "https") {
+    secureClient.setInsecure();
+    http.setConnectTimeout(8000);
+    http.setTimeout(8000);
+    if (!http.begin(secureClient, url)) return "失败（HTTPS begin失败）";
+  } else {
+    http.setConnectTimeout(8000);
+    http.setTimeout(8000);
+    if (!http.begin(plainClient, url)) return "失败（HTTP begin失败）";
+  }
+
+  if (method == "POST") {
+    http.addHeader("Content-Type", "application/json");
+    httpCode = http.POST(body);
+  } else {
+    httpCode = http.GET();
+  }
+
+  unsigned long cost = millis() - t0;
+  String result;
+  if (httpCode > 0) {
+    result = "成功（HTTP " + String(httpCode) + "，耗时" + String(cost) + "ms）";
+  } else {
+    result = "失败（" + http.errorToString(httpCode) + "，耗时" + String(cost) + "ms）";
+  }
+  http.end();
+  return result;
+}
+
 struct WiFiGatewayPingResult {
   bool success;
   bool finished;
@@ -114,20 +247,58 @@ void printWiFiDiagnostics(const String& source) {
   if (!showWiFiDiagnostics) return;
 
   wl_status_t status = WiFi.status();
-  Serial.println("=== WiFi诊断：" + source + " ===");
-  Serial.println("运行时间(ms): " + String(millis()));
-  Serial.println("状态: " + wifiStatusText(status) + " (" + String((int)status) + ")");
-  Serial.println("SSID: " + WiFi.SSID());
-  Serial.println("IP: " + WiFi.localIP().toString());
-  Serial.println("网关: " + WiFi.gatewayIP().toString());
-  Serial.println("子网掩码: " + WiFi.subnetMask().toString());
-  Serial.println("DNS: " + WiFi.dnsIP().toString());
-  Serial.println("RSSI: " + String(WiFi.RSSI()) + " dBm");
-  Serial.println("信道: " + String(WiFi.channel()));
-  Serial.println("BSSID: " + WiFi.BSSIDstr());
-  Serial.println("MAC: " + WiFi.macAddress());
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "diag start source=" + source);
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "uptimeMs=" + String(millis()));
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "status=" + wifiStatusText(status) + " (" + String((int)status) + ")");
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "SSID=" + WiFi.SSID());
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "IP=" + WiFi.localIP().toString());
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "Gateway=" + WiFi.gatewayIP().toString());
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "Subnet=" + WiFi.subnetMask().toString());
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "DNS=" + WiFi.dnsIP().toString());
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "RSSI=" + String(WiFi.RSSI()) + " dBm");
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "Channel=" + String(WiFi.channel()));
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "BSSID=" + WiFi.BSSIDstr());
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "MAC=" + WiFi.macAddress());
   if (pingGatewayInWiFiDiagnostics) {
-    Serial.println("网关Ping: " + pingGatewayForWiFiDiagnostics(WiFi.gatewayIP()));
+    systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "Gateway ping=" + pingGatewayForWiFiDiagnostics(WiFi.gatewayIP()));
   }
-  Serial.println("====================");
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_WIFI, "diag end source=" + source);
+}
+
+void runKeepAliveDeepDiagnostics(const String& source) {
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE, "deep diag start source=" + source);
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
+                      "wifi status=" + wifiStatusText(WiFi.status()) + " (" + String((int)WiFi.status()) + ")");
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
+                      "gateway ping=" + pingGatewayForWiFiDiagnostics(WiFi.gatewayIP()));
+
+  if (config.keepAliveUrl.length() == 0) {
+    systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_KEEPALIVE, "keepalive url not configured");
+    systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE, "deep diag end source=" + source);
+    return;
+  }
+
+  ParsedWiFiDiagUrl parsed;
+  if (!parseUrlForWiFiDiagnostics(config.keepAliveUrl, parsed)) {
+    systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE, "keepalive url=" + config.keepAliveUrl);
+    systemLogSerialOnly(LOG_LEVEL_ERROR, LOG_MODULE_KEEPALIVE, "url parse failed: invalid format");
+    systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE, "deep diag end source=" + source);
+    return;
+  }
+
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE, "keepalive url=" + config.keepAliveUrl);
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
+                      "url parse scheme=" + parsed.scheme + " host=" + parsed.host +
+                      " port=" + String(parsed.port) + " path=" + parsed.path);
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
+                      "DNS(" + parsed.host + ")=" + resolveHostForWiFiDiagnostics(parsed.host));
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
+                      "TCP(1.1.1.1:443)=" + tcpConnectForWiFiDiagnostics("1.1.1.1", 443));
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
+                      "TCP(" + parsed.host + ":" + String(parsed.port) + ")=" +
+                      tcpConnectForWiFiDiagnostics(parsed.host, parsed.port));
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
+                      "HTTP(" + config.keepAliveMethod + ")=" +
+                      httpProbeForWiFiDiagnostics(config.keepAliveUrl, config.keepAliveMethod, config.keepAliveBody));
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE, "deep diag end source=" + source);
 }

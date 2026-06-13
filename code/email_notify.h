@@ -5,12 +5,12 @@
 void sendEmailNotification(const char* subject, const char* body) {
   if (config.smtpServer.length() == 0 || config.smtpUser.length() == 0 ||
       config.smtpPass.length() == 0 || config.smtpSendTo.length() == 0) {
-    Serial.println("邮件配置不完整，跳过发送");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SYSTEM, "email config incomplete, skip send");
     return;
   }
 
   auto statusCallback = [](SMTPStatus status) {
-    Serial.println(status.text);
+    systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "smtp status: " + String(status.text));
   };
   smtp.connect(config.smtpServer.c_str(), config.smtpPort, statusCallback);
   if (smtp.isConnected()) {
@@ -25,8 +25,8 @@ void sendEmailNotification(const char* subject, const char* body) {
     msg.text.body(body);
     msg.timestamp = time(nullptr);
     smtp.send(msg);
-    Serial.println("邮件发送完成");
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "email send complete");
   } else {
-    Serial.println("邮件服务器连接失败");
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_SYSTEM, "email server connect failed");
   }
 }

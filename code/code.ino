@@ -5,6 +5,7 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <Preferences.h>
+#include <SPIFFS.h>
 #include <pdulib.h>
 #define ENABLE_SMTP
 #define ENABLE_DEBUG
@@ -50,6 +51,7 @@ unsigned long loopPerfIterations = 0;
 unsigned long loopPerfMaxGapMs = 0;
 unsigned long perfAutoReportAtMs = 0;
 
+#include "logger.h"
 #include "config_core.h"
 #include "diagnostics_utils.h"
 #include "led_indicator.h"
@@ -94,10 +96,13 @@ void setup() {
   // USB 串口日志
   Serial.begin(115200);
   delay(1500);  // 等 USB CDC 稳定
+  initSystemLog();
+  systemLog(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "boot start");
   appLoopTaskHandle = xTaskGetCurrentTaskHandle();
   loopPerfWindowStartMs = millis();
   loopPerfLastTickMs = loopPerfWindowStartMs;
-  Serial.println("USB串口命令台已启用，输入 HELP 查看命令。AT... 会按整行转发给模组。");
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM,
+                      "USB serial console ready; input HELP for commands");
   setupWiFiEventLogging();
 
   // 模组串口（UART）
@@ -118,46 +123,46 @@ void setup() {
   // ========== 先初始化模组 ==========
   ledSetState(LED_MODEM_INIT);
   while (!sendATandWaitOK("AT", 1000)) {
-    Serial.println("AT未响应，重试...");
+    systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_MODEM, "AT not responding during boot init, retrying");
     blink_short();
   }
-  Serial.println("模组AT响应正常");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM, "modem AT ready");
 
   //先设置CGACT，禁用数据连接
   while (!sendATandWaitOK("AT+CGACT=0,1", 5000)) {
-    Serial.println("设置CGACT失败，重试...");
+    systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_MODEM, "AT+CGACT=0,1 failed during boot init, retrying");
     blink_short();
   }
-  Serial.println("已禁用数据连接(AT+CGACT=0,1)，防止流量消耗");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM, "CGACT disabled to avoid data usage");
 
   // 选择模块内部短信存储，避免占用SIM卡短信容量
   while (!sendATandWaitOK("AT+CPMS=\"" SMS_STORAGE "\",\"" SMS_STORAGE "\",\"" SMS_STORAGE "\"", 3000)) {
-    Serial.println("设置CPMS失败，重试...");
+    systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_MODEM, "AT+CPMS failed during boot init, retrying");
     blink_short();
   }
-  Serial.println("CPMS短信存储设置完成，当前存储: " SMS_STORAGE);
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM, "CPMS storage set to " SMS_STORAGE);
 
   //设置短信自动上报
   while (!sendATandWaitOK("AT+CNMI=2,1,0,0,0", 1000)) {
-    Serial.println("设置CNMI失败，重试...");
+    systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_MODEM, "AT+CNMI failed during boot init, retrying");
     blink_short();
   }
-  Serial.println("CNMI参数设置完成");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM, "CNMI configured");
 
   //配置PDU模式
   while (!sendATandWaitOK("AT+CMGF=0", 1000)) {
-    Serial.println("设置PDU模式失败，重试...");
+    systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_MODEM, "AT+CMGF=0 failed during boot init, retrying");
     blink_short();
   }
-  Serial.println("PDU模式设置完成");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM, "PDU mode configured");
 
   //等待网络注册（LTE/4G）
   ledSetState(LED_WAIT_CELLULAR);
   while (!waitCEREG()) {
-    Serial.println("等待网络注册...");
+    systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_MODEM, "waiting for cellular registration");
     blink_short();
   }
-  Serial.println("网络已注册");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM, "cellular network registered");
   // ========== 模组初始化完成 ==========
 
   ledSetState(LED_WIFI_CONNECTING);
@@ -166,7 +171,7 @@ void setup() {
 
   // NTP时间同步（获取UTC时间）
   if (wifiConnected) {
-    Serial.println("正在同步NTP时间...");
+    systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "syncing NTP time");
     configTime(0, 0, "ntp.ntsc.ac.cn", "ntp.aliyun.com", "pool.ntp.org");
     int ntpRetry = 0;
     while (time(nullptr) < 100000 && ntpRetry < 100) {
@@ -175,15 +180,13 @@ void setup() {
     }
     if (time(nullptr) >= 100000) {
       timeSynced = true;
-      Serial.println("NTP时间同步成功");
       time_t now = time(nullptr);
-      Serial.print("当前UTC时间戳: ");
-      Serial.println(now);
+      systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "NTP sync ok utc=" + String((unsigned long)now));
     } else {
-      Serial.println("NTP时间同步失败，将使用设备时间");
+      systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SYSTEM, "NTP sync failed, using device time");
     }
   } else {
-    Serial.println("WiFi未连接，跳过NTP时间同步");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SYSTEM, "skip NTP sync: WiFi not connected");
   }
 
   // 启动HTTP服务器
@@ -214,7 +217,7 @@ void setup() {
   server.on("/at", handleATCommand);
   server.onNotFound(handleCaptivePortalNotFound);
   server.begin();
-  Serial.println("HTTP服务器已启动");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "http server started");
 
   ssl_client.setInsecure();
 
@@ -229,14 +232,14 @@ void setup() {
 
   // 如果配置有效，发送启动邮件通知
   if (wifiConnected && configValid && config.startupMailEnabled) {
-    Serial.println("配置有效，发送启动邮件通知...");
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "config valid, sending startup email");
     String subject = "短信转发器已启动";
     String body = "设备已启动\n设备地址: " + getDeviceUrl();
     sendEmailNotification(subject.c_str(), body.c_str());
   } else if (wifiConnected && configValid && !config.startupMailEnabled) {
-    Serial.println("启动通知开关已关闭，跳过启动邮件通知");
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "startup notification disabled, skip startup email");
   } else if (!wifiConnected) {
-    Serial.println("WiFi未连接，跳过启动邮件通知");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SYSTEM, "skip startup email: WiFi not connected");
   }
 
   // 启动网络后台任务：异步处理推送、邮件和掉线检测，避免阻塞主循环
@@ -271,7 +274,7 @@ void loop() {
   checkConcatTimeout();
 
   if (perfAutoReportAtMs != 0 && (long)(millis() - perfAutoReportAtMs) >= 0) {
-    Serial.println("[Perf] Auto report");
+    systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_SERIAL, "performance auto report");
     printSerialConsolePerf();
     perfAutoReportAtMs = 0;
   }

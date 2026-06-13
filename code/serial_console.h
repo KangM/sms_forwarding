@@ -17,8 +17,18 @@ void printSerialConsoleHelp() {
   Serial.println();
   Serial.println("=== SMS Forwarding Serial Console ===");
   Serial.println("AT...        Forward one AT command to modem");
-  Serial.println("WIFI         Print WiFi diagnostics and gateway ping");
   Serial.println("PINGGW       Ping WiFi gateway once");
+  Serial.println("DNS <host>   Resolve host via current WiFi DNS");
+  Serial.println("TCP <h> [p]  Test TCP connect, default port 443");
+  Serial.println("HTTP <url>   Probe one HTTP/HTTPS GET request");
+  Serial.println("KADEBUG      Deep-diagnose current KeepAlive URL");
+  Serial.println("KAAUTO [ON|OFF] Show or toggle KeepAlive auto-diagnostics");
+  Serial.println("LOGTIME [ON|OFF] Show or toggle device uptime prefix in serial logs");
+  Serial.println("LOG [N]      Show recent runtime logs");
+  Serial.println("LOG CLEAR    Clear runtime log ring");
+  Serial.println("LOG FLASH    Show active flash log file");
+  Serial.println("LOG FLASH PREV Show previous rotated flash log file");
+  Serial.println("LOG FLASH CLEAR Clear flash log files");
   Serial.println("RECONNECT    Force WiFi reconnect");
   Serial.println("WIFIRESET    Full WiFi radio reset and reconnect");
   Serial.println("MODEMRESET   Power-cycle modem and wait for AT");
@@ -35,12 +45,57 @@ void printSerialConsoleStatus() {
   Serial.println("Uptime(ms): " + String(millis()));
   Serial.println("Free heap: " + String(ESP.getFreeHeap()));
   Serial.println("Min free heap: " + String(ESP.getMinFreeHeap()));
+  Serial.println("Config valid: " + String(configValid ? "yes" : "no"));
   Serial.println("WiFi status: " + wifiStatusText(WiFi.status()) + " (" + String((int)WiFi.status()) + ")");
+  Serial.println("SSID: " + WiFi.SSID());
   Serial.println("IP: " + WiFi.localIP().toString());
   Serial.println("Gateway: " + WiFi.gatewayIP().toString());
+  Serial.println("Subnet mask: " + WiFi.subnetMask().toString());
+  Serial.println("DNS: " + WiFi.dnsIP().toString());
   Serial.println("RSSI: " + String(WiFi.RSSI()) + " dBm");
-  Serial.println("Config valid: " + String(configValid ? "yes" : "no"));
+  Serial.println("Channel: " + String(WiFi.channel()));
+  Serial.println("BSSID: " + WiFi.BSSIDstr());
+  Serial.println("MAC: " + WiFi.macAddress());
+  Serial.println("Gateway ping: " + pingGatewayForWiFiDiagnostics(WiFi.gatewayIP()));
+  Serial.println("Chip temp: " + chipTemperatureStatusText());
   Serial.println("====================");
+}
+
+void handleSerialConsoleLogCommand(const String& cmd, const String& upper) {
+  if (upper == "LOG") {
+    printSystemLogRing();
+    return;
+  }
+  if (upper == "LOG CLEAR") {
+    clearSystemLogRing();
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SERIAL, "runtime log ring cleared from serial console");
+    return;
+  }
+  if (upper == "LOG FLASH") {
+    printSystemLogFlash(SYSTEM_LOG_FLASH_PATH, "=== Flash Log (active) ===");
+    return;
+  }
+  if (upper == "LOG FLASH PREV") {
+    printSystemLogFlash(SYSTEM_LOG_FLASH_PREV_PATH, "=== Flash Log (previous) ===");
+    return;
+  }
+  if (upper == "LOG FLASH CLEAR") {
+    clearSystemLogFlash();
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SERIAL, "flash log files cleared from serial console");
+    return;
+  }
+  if (upper.startsWith("LOG ")) {
+    String arg = cmd.substring(4);
+    arg.trim();
+    if (arg.length() > 0) {
+      long requested = arg.toInt();
+      if (requested > 0) {
+        printSystemLogRing((size_t)requested);
+        return;
+      }
+    }
+  }
+  Serial.println("[SerialConsole] Unknown LOG usage. Try LOG, LOG 50, LOG CLEAR, LOG FLASH, LOG FLASH PREV, LOG FLASH CLEAR");
 }
 
 void resetPerfCounters(unsigned long autoReportSeconds = 300) {
@@ -160,18 +215,56 @@ void handleSerialConsoleCommand(String cmd) {
 
   if (upper == "HELP" || upper == "?") {
     printSerialConsoleHelp();
-  } else if (upper == "WIFI") {
-    printWiFiDiagnostics("SerialConsole");
+  } else if (upper == "LOG" || upper.startsWith("LOG ")) {
+    handleSerialConsoleLogCommand(cmd, upper);
   } else if (upper == "PINGGW") {
     Serial.println("Gateway ping: " + pingGatewayForWiFiDiagnostics(WiFi.gatewayIP()));
+  } else if (upper.startsWith("DNS ")) {
+    String host = cmd.substring(4);
+    host.trim();
+    Serial.println("DNS(" + host + "): " + resolveHostForWiFiDiagnostics(host));
+  } else if (upper.startsWith("TCP ")) {
+    String args = cmd.substring(4);
+    args.trim();
+    int space = args.indexOf(' ');
+    String host = space >= 0 ? args.substring(0, space) : args;
+    String portArg = space >= 0 ? args.substring(space + 1) : "";
+    host.trim();
+    portArg.trim();
+    uint16_t port = portArg.length() > 0 ? (uint16_t)portArg.toInt() : 443;
+    Serial.println("TCP(" + host + ":" + String(port) + "): " + tcpConnectForWiFiDiagnostics(host, port));
+  } else if (upper.startsWith("HTTP ")) {
+    String url = cmd.substring(5);
+    url.trim();
+    Serial.println("HTTP(" + url + "): " + httpProbeForWiFiDiagnostics(url));
+  } else if (upper == "KADEBUG") {
+    runKeepAliveDeepDiagnostics("SerialConsole");
+  } else if (upper == "KAAUTO") {
+    Serial.println("KeepAlive auto diagnostics: " + String(keepAliveAutoDiagEnabled ? "ON" : "OFF"));
+    Serial.println("KeepAlive failure armed: " + String(keepAliveFailureDiagArmed ? "YES" : "NO"));
+  } else if (upper == "LOGTIME") {
+    Serial.println("Serial log time prefix: " + String(systemLogSerialIncludeTime ? "ON" : "OFF"));
+  } else if (upper == "LOGTIME ON") {
+    systemLogSerialIncludeTime = true;
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SERIAL, "serial log time prefix enabled");
+  } else if (upper == "LOGTIME OFF") {
+    systemLogSerialIncludeTime = false;
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SERIAL, "serial log time prefix disabled");
+  } else if (upper == "KAAUTO ON") {
+    keepAliveAutoDiagEnabled = true;
+    keepAliveFailureDiagArmed = true;
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SERIAL, "keepalive auto diagnostics enabled");
+  } else if (upper == "KAAUTO OFF") {
+    keepAliveAutoDiagEnabled = false;
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SERIAL, "keepalive auto diagnostics disabled");
   } else if (upper == "RECONNECT") {
-    Serial.println("[SerialConsole] Force WiFi reconnect requested");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SERIAL, "force wifi reconnect requested");
     forceWiFiReconnect("serial console");
   } else if (upper == "WIFIRESET") {
-    Serial.println("[SerialConsole] Full WiFi reset requested");
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_SERIAL, "full wifi reset requested");
     forceWiFiFullReset("serial console");
   } else if (upper == "MODEMRESET") {
-    Serial.println("[SerialConsole] Modem reset requested");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SERIAL, "modem reset requested");
     resetModule();
   } else if (upper == "STATUS") {
     printSerialConsoleStatus();
@@ -188,21 +281,22 @@ void handleSerialConsoleCommand(String cmd) {
       }
     }
     resetPerfCounters(seconds);
-    Serial.println("[SerialConsole] Performance counters reset; auto report in " + String(seconds) + "s");
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SERIAL,
+                     "performance counters reset autoReportSec=" + String(seconds));
   } else if (upper == "RESTART") {
-    Serial.println("[SerialConsole] Restarting ESP32...");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SERIAL, "esp32 restart requested");
     delay(200);
     ESP.restart();
   } else if (upper.startsWith("AT")) {
-    Serial.println("[SerialConsole] Forward AT: " + cmd);
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SERIAL, "forward AT command=" + cmd);
     String resp = sendATCommand(cmd.c_str(), 5000);
     if (resp.length() > 0) {
       Serial.println(resp);
     } else {
-      Serial.println("[SerialConsole] AT response timeout or empty response");
+      systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SERIAL, "AT response timeout or empty response");
     }
   } else {
-    Serial.println("[SerialConsole] Unknown command: " + cmd);
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SERIAL, "unknown command=" + cmd);
     Serial.println("Type HELP for available commands.");
   }
 }
@@ -224,7 +318,7 @@ void handleUsbSerialConsole() {
     } else {
       usbConsoleLine = "";
       usbConsoleLastInputAt = 0;
-      Serial.println("[SerialConsole] Input line too long, discarded");
+      systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SERIAL, "input line too long, discarded");
     }
   }
 

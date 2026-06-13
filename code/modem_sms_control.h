@@ -7,22 +7,24 @@ bool enqueueEmailNotify(const String& subject, const String& body);
 
 // 发送短信（PDU模式）
 bool sendSMS(const char* phoneNumber, const char* message) {
-  Serial.println("准备发送短信...");
-  Serial.print("目标号码: "); Serial.println(phoneNumber);
-  Serial.print("短信内容: "); Serial.println(message);
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM,
+                   "send sms start phone=" + String(phoneNumber));
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_MODEM,
+                      "send sms text=" + String(message));
 
   // 使用pdulib编码PDU
   pdu.setSCAnumber();  // 使用默认短信中心
   int pduLen = pdu.encodePDU(phoneNumber, message);
 
   if (pduLen < 0) {
-    Serial.print("PDU编码失败，错误码: ");
-    Serial.println(pduLen);
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_MODEM,
+                     "encode pdu failed code=" + String(pduLen) +
+                     " phone=" + String(phoneNumber));
     return false;
   }
 
-  Serial.print("PDU数据: "); Serial.println(pdu.getSMS());
-  Serial.print("PDU长度: "); Serial.println(pduLen);
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_MODEM,
+                      "encoded pdu len=" + String(pduLen));
 
   // 发送AT+CMGS命令
   String cmgsCmd = "AT+CMGS=";
@@ -37,7 +39,6 @@ bool sendSMS(const char* phoneNumber, const char* message) {
   while (millis() - start < 5000) {
     if (Serial1.available()) {
       char c = Serial1.read();
-      Serial.print(c);
       if (c == '>') {
         gotPrompt = true;
         break;
@@ -46,7 +47,8 @@ bool sendSMS(const char* phoneNumber, const char* message) {
   }
 
   if (!gotPrompt) {
-    Serial.println("未收到>提示符");
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_MODEM,
+                     "send sms missing prompt phone=" + String(phoneNumber));
     return false;
   }
 
@@ -61,30 +63,32 @@ bool sendSMS(const char* phoneNumber, const char* message) {
     while (Serial1.available()) {
       char c = Serial1.read();
       resp += c;
-      Serial.print(c);
       if (resp.indexOf("OK") >= 0) {
-        Serial.println("\n短信发送成功");
+        systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM,
+                         "send sms ok phone=" + String(phoneNumber));
         return true;
       }
       if (resp.indexOf("ERROR") >= 0) {
-        Serial.println("\n短信发送失败");
+        systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_MODEM,
+                         "send sms modem error phone=" + String(phoneNumber));
         return false;
       }
     }
   }
-  Serial.println("短信发送超时");
+  systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_MODEM,
+                   "send sms timeout phone=" + String(phoneNumber));
   return false;
 }
 
 // 新增“模组断电重启”函数
 void modemPowerCycle() {
   pinMode(MODEM_EN_PIN, OUTPUT);
-
-  Serial.println("EN 拉低：关闭模组");
+  systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_MODEM, "modem power cycle start");
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_MODEM, "EN low: modem off");
   digitalWrite(MODEM_EN_PIN, LOW);
   delay(1200);  // 关机时间给够
 
-  Serial.println("EN 拉高：开启模组");
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_MODEM, "EN high: modem on");
   digitalWrite(MODEM_EN_PIN, HIGH);
   delay(6000);  // 等模组完全启动再发AT（关键）
 }
@@ -92,7 +96,7 @@ void modemPowerCycle() {
 
 // 重启模组
 void resetModule() {
-  Serial.println("正在硬重启模组（EN 断电重启）...");
+  systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_MODEM, "reset module start");
 
   modemPowerCycle();
 
@@ -106,11 +110,15 @@ void resetModule() {
       ok = true;
       break;
     }
-    Serial.println("AT未响应，继续等模组启动...");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_MODEM,
+                     "reset module waiting for AT attempt=" + String(i + 1));
   }
 
-  if (ok) Serial.println("模组AT恢复正常");
-  else    Serial.println("模组AT仍未响应（检查EN接线/供电/波特率）");
+  if (ok) {
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM, "reset module recovered");
+  } else {
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_MODEM, "reset module AT still unavailable");
+  }
 }
 
 
@@ -166,7 +174,8 @@ void processAdminCommand(const char* sender, const char* text) {
   String cmd = String(text);
   cmd.trim();
 
-  Serial.println("处理管理员命令: " + cmd);
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM,
+                   "admin command sender=" + String(sender) + " cmd=" + cmd);
 
   // 处理 SMS:号码:内容 命令
   if (cmd.startsWith("SMS:")) {
@@ -180,8 +189,10 @@ void processAdminCommand(const char* sender, const char* text) {
       targetPhone.trim();
       smsContent.trim();
 
-      Serial.println("目标号码: " + targetPhone);
-      Serial.println("短信内容: " + smsContent);
+      systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM,
+                       "admin sms command target=" + targetPhone);
+      systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_MODEM,
+                          "admin sms command text=" + smsContent);
 
       bool success = sendSMS(targetPhone.c_str(), smsContent.c_str());
 
@@ -195,13 +206,14 @@ void processAdminCommand(const char* sender, const char* text) {
 
       enqueueEmailNotify(subject, body);
     } else {
-      Serial.println("SMS命令格式错误");
+      systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_MODEM,
+                       "admin sms command invalid format");
       enqueueEmailNotify("命令执行失败", "SMS命令格式错误，正确格式: SMS:号码:内容");
     }
   }
   // 处理 RESET 命令
   else if (cmd.equals("RESET")) {
-    Serial.println("执行RESET命令");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_MODEM, "admin reset command");
 
     // 先发送邮件通知（因为重启后就发不了了）
     sendEmailNotification("重启命令已执行", "收到RESET命令，即将重启模组和ESP32...");
@@ -210,11 +222,12 @@ void processAdminCommand(const char* sender, const char* text) {
     resetModule();
 
     // 重启ESP32
-    Serial.println("正在重启ESP32...");
+    systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_SYSTEM, "ESP32 restart requested by admin RESET");
     delay(1000);
     ESP.restart();
   }
   else {
-    Serial.println("未知命令: " + cmd);
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_MODEM,
+                     "admin unknown command=" + cmd);
   }
 }

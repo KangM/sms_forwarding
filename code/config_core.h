@@ -41,7 +41,7 @@ void saveConfig() {
   }
 
   preferences.end();
-  Serial.println("配置已保存");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "config saved");
 }
 
 // 从NVS加载配置
@@ -91,11 +91,11 @@ void loadConfig() {
     config.pushChannels[0].url = oldHttpUrl;
     config.pushChannels[0].type = preferences.getUChar("barkMode", 0) != 0 ? PUSH_TYPE_BARK : PUSH_TYPE_POST_JSON;
     config.pushChannels[0].name = "迁移通道";
-    Serial.println("已迁移旧HTTP配置到推送通道1");
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "migrated legacy HTTP config to push channel 1");
   }
 
   preferences.end();
-  Serial.println("配置已加载");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "config loaded");
 }
 
 // 检查推送通道是否有效配置
@@ -240,15 +240,15 @@ bool isConfigValid() {
 
 void printConfigValidationResult(const String& source) {
   configValid = validateConfig(configInvalidReason);
-  Serial.println("=== 配置检查（" + source + "）===");
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "config validation source=" + source);
   if (configValid) {
-    Serial.println("配置有效：已配置至少一个可用通知通道");
+    systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "config valid: at least one notification channel ready");
   } else {
-    Serial.println("配置无效：");
-    Serial.println(configInvalidReason);
-    Serial.println("请访问 " + getDeviceUrl() + " 配置系统参数");
+    systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_SYSTEM, "config invalid");
+    systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_SYSTEM, configInvalidReason);
+    systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_SYSTEM, "configure at " + getDeviceUrl());
   }
-  Serial.println("====================");
+  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "config validation end");
 }
 
 // 获取当前设备URL
