@@ -105,7 +105,7 @@ void handleKeepAlive() {
     return;
   }
 
-  if (!ensureWiFiGatewayReachable("KeepAlive前检查", true)) {
+  if (!ensureWiFiGatewayReachable("保活前网关检查", true)) {
     appendPushDebugLog("持续请求跳过：WiFi网关不可达，已触发恢复");
     systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_KEEPALIVE,
                      "skip request: gateway unreachable, recovery triggered");

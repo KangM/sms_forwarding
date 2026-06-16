@@ -266,39 +266,39 @@ void printWiFiDiagnostics(const String& source) {
 }
 
 void runKeepAliveDeepDiagnostics(const String& source) {
-  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE, "deep diag start source=" + source);
-  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
-                      "wifi status=" + wifiStatusText(WiFi.status()) + " (" + String((int)WiFi.status()) + ")");
-  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
-                      "gateway ping=" + pingGatewayForWiFiDiagnostics(WiFi.gatewayIP()));
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_NETDIAG, "deep diag start source=" + source);
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_NETDIAG,
+                   "wifi status=" + wifiStatusText(WiFi.status()) + " (" + String((int)WiFi.status()) + ")");
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_NETDIAG,
+                   "gateway ping=" + pingGatewayForWiFiDiagnostics(WiFi.gatewayIP()));
 
   if (config.keepAliveUrl.length() == 0) {
-    systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_KEEPALIVE, "keepalive url not configured");
-    systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE, "deep diag end source=" + source);
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_NETDIAG, "keepalive url not configured");
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_NETDIAG, "deep diag end source=" + source);
     return;
   }
 
   ParsedWiFiDiagUrl parsed;
   if (!parseUrlForWiFiDiagnostics(config.keepAliveUrl, parsed)) {
-    systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE, "keepalive url=" + config.keepAliveUrl);
-    systemLogSerialOnly(LOG_LEVEL_ERROR, LOG_MODULE_KEEPALIVE, "url parse failed: invalid format");
-    systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE, "deep diag end source=" + source);
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_NETDIAG, "keepalive url=" + config.keepAliveUrl);
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_NETDIAG, "url parse failed: invalid format");
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_NETDIAG, "deep diag end source=" + source);
     return;
   }
 
-  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE, "keepalive url=" + config.keepAliveUrl);
-  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
-                      "url parse scheme=" + parsed.scheme + " host=" + parsed.host +
-                      " port=" + String(parsed.port) + " path=" + parsed.path);
-  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
-                      "DNS(" + parsed.host + ")=" + resolveHostForWiFiDiagnostics(parsed.host));
-  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
-                      "TCP(1.1.1.1:443)=" + tcpConnectForWiFiDiagnostics("1.1.1.1", 443));
-  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
-                      "TCP(" + parsed.host + ":" + String(parsed.port) + ")=" +
-                      tcpConnectForWiFiDiagnostics(parsed.host, parsed.port));
-  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE,
-                      "HTTP(" + config.keepAliveMethod + ")=" +
-                      httpProbeForWiFiDiagnostics(config.keepAliveUrl, config.keepAliveMethod, config.keepAliveBody));
-  systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_KEEPALIVE, "deep diag end source=" + source);
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_NETDIAG, "keepalive url=" + config.keepAliveUrl);
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_NETDIAG,
+                   "url parse scheme=" + parsed.scheme + " host=" + parsed.host +
+                   " port=" + String(parsed.port) + " path=" + parsed.path);
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_NETDIAG,
+                   "DNS(" + parsed.host + ")=" + resolveHostForWiFiDiagnostics(parsed.host));
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_NETDIAG,
+                   "TCP(1.1.1.1:443)=" + tcpConnectForWiFiDiagnostics("1.1.1.1", 443));
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_NETDIAG,
+                   "TCP(" + parsed.host + ":" + String(parsed.port) + ")=" +
+                   tcpConnectForWiFiDiagnostics(parsed.host, parsed.port));
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_NETDIAG,
+                   "HTTP(" + config.keepAliveMethod + ")=" +
+                   httpProbeForWiFiDiagnostics(config.keepAliveUrl, config.keepAliveMethod, config.keepAliveBody));
+  systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_NETDIAG, "deep diag end source=" + source);
 }

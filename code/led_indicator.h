@@ -57,8 +57,10 @@ static bool ledPhysicalOn = false;
 static void ledRenderOn(const LedStyle& style) {
 #if defined(LED_IS_RGB)
   rgbLedWrite(LED_BUILTIN, style.r, style.g, style.b);
+#elif defined(LED_ACTIVE_HIGH)
+  digitalWrite(LED_BUILTIN, HIGH);  // 合宙板 LED 高电平点亮
 #else
-  digitalWrite(LED_BUILTIN, LOW);  // C3 低电平点亮
+  digitalWrite(LED_BUILTIN, LOW);   // C3 SuperMini 低电平点亮
 #endif
   ledPhysicalOn = true;
 }
@@ -66,6 +68,8 @@ static void ledRenderOn(const LedStyle& style) {
 static void ledRenderOff() {
 #if defined(LED_IS_RGB)
   rgbLedWrite(LED_BUILTIN, 0, 0, 0);
+#elif defined(LED_ACTIVE_HIGH)
+  digitalWrite(LED_BUILTIN, LOW);
 #else
   digitalWrite(LED_BUILTIN, HIGH);
 #endif

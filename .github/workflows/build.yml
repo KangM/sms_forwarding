@@ -24,6 +24,11 @@ jobs:
             fqbn: esp32:esp32:esp32c3:CDCOnBoot=cdc,FlashSize=4M,PartitionScheme=huge_app
             chip: esp32c3
             define: SMS_BOARD_C3
+          - id: esp32c3-luaos
+            name: LuatOS ESP32C3-CORE
+            fqbn: esp32:esp32:esp32c3:CDCOnBoot=cdc,FlashMode=dio,FlashSize=4M,PartitionScheme=huge_app
+            chip: esp32c3
+            define: SMS_BOARD_C3_LUAOS
           - id: esp32s3
             name: ESP32-S3 SuperMini
             fqbn: esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=4M,PartitionScheme=huge_app,PSRAM=disabled

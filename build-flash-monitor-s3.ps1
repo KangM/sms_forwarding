@@ -1,19 +1,20 @@
 # build-flash-monitor-s3.ps1
 # All-in-one ESP32 SuperMini helper: compile -> upload -> interactive timestamped serial monitor.
-# Default target is ESP32-S3. Use -Board C3 to build/flash the ESP32-C3 variant.
+# Default target is ESP32-S3. Use -Board C3 or -Board C3_LUAOS to target C3 variants.
 #
 # Examples:
 #   .\build-flash-monitor-s3.ps1
 #   .\build-flash-monitor-s3.ps1 -Port COM6
-#   .\build-flash-monitor-s3.ps1 -Board C3 -Port COM7
+#   .\build-flash-monitor-s3.ps1 -Board C3_LUAOS -Port COM7
 #   .\build-flash-monitor-s3.ps1 -Port COM6 -Clean
 #   .\build-flash-monitor-s3.ps1 -Port COM6 -NoMonitor
 #   .\build-flash-monitor-s3.ps1 -Monitor -Port COM6
+#   .\build-flash-monitor-s3.ps1 -SoftApProbe -Port COM6
 #   .\build-flash-monitor-s3.ps1 -Help
 
 param(
     [Alias("Board", "Target")]
-    [ValidateSet("S3", "C3")]
+    [ValidateSet("S3", "C3", "C3_LUAOS")]
     [string]$BoardType = "S3",
     [Alias("p")]
     [string]$Port = "COM6",
@@ -29,6 +30,10 @@ param(
     [switch]$Dtr,
     [Alias("r")]
     [switch]$Rts,
+    [Alias("sap")]
+    [switch]$SoftApProbe,
+    [Alias("Sketch")]
+    [string]$SketchPath,
     [Alias("n")]
     [switch]$Notify,
     [Alias("nn")]
@@ -39,7 +44,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$SketchDir = Join-Path $PSScriptRoot "code"
+$DefaultSketchDir = Join-Path $PSScriptRoot "code"
+$SoftApProbeSketchDir = Join-Path $env:TEMP "sms_softap_minimal_test"
+
+if ($SoftApProbe -and -not $PSBoundParameters.ContainsKey("BoardType")) {
+    $BoardType = "C3"
+}
+
+if ($SoftApProbe -and $SketchPath) {
+    throw "-SoftApProbe and -SketchPath cannot be used together."
+}
 
 $boardConfigs = @{
     "S3" = @{
@@ -49,10 +63,17 @@ $boardConfigs = @{
         BoardFlag = "-DSMS_BOARD_S3"
         LogSuffix = "s3"
     }
+    "C3_LUAOS" = @{
+        Name = "LuatOS ESP32C3-CORE"
+        ShortName = "C3_LUAOS"
+        Fqbn = "esp32:esp32:esp32c3:UploadSpeed=921600,CDCOnBoot=default,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,PartitionScheme=huge_app,DebugLevel=none,EraseFlash=all,JTAGAdapter=default,ZigbeeMode=default"
+        BoardFlag = "-DSMS_BOARD_C3_LUAOS"
+        LogSuffix = "c3-luaos"
+    }
     "C3" = @{
         Name = "ESP32-C3 SuperMini"
         ShortName = "C3"
-        Fqbn = "esp32:esp32:esp32c3:CDCOnBoot=cdc,UploadSpeed=115200,FlashSize=4M,PartitionScheme=huge_app"
+        Fqbn = "esp32:esp32:esp32c3:UploadSpeed=921600,CDCOnBoot=default,CPUFreq=160,FlashFreq=80,FlashSize=4M,PartitionScheme=huge_app,DebugLevel=none,EraseFlash=all,JTAGAdapter=default,ZigbeeMode=default"
         BoardFlag = "-DSMS_BOARD_C3"
         LogSuffix = "c3"
     }
@@ -65,6 +86,26 @@ $Fqbn = $boardConfig.Fqbn
 $BoardFlag = $boardConfig.BoardFlag
 $LogSuffix = $boardConfig.LogSuffix
 
+$SketchDir = $DefaultSketchDir
+$SketchDisplayName = "project firmware"
+if ($SoftApProbe) {
+    $SketchDir = $SoftApProbeSketchDir
+    $SketchDisplayName = "SoftAP probe sketch"
+    $LogSuffix = "$LogSuffix-softap-probe"
+} elseif ($SketchPath) {
+    $SketchDir = $SketchPath
+    $SketchDisplayName = "custom sketch"
+    $LogSuffix = "$LogSuffix-custom"
+}
+
+if (Test-Path -LiteralPath $SketchDir -PathType Leaf) {
+    $SketchDir = Split-Path -Parent (Resolve-Path -LiteralPath $SketchDir)
+} elseif (Test-Path -LiteralPath $SketchDir -PathType Container) {
+    $SketchDir = (Resolve-Path -LiteralPath $SketchDir).Path
+} else {
+    throw "Sketch path not found: $SketchDir"
+}
+
 function Show-Usage {
     $scriptName = Split-Path -Leaf $PSCommandPath
     Write-Host @"
@@ -72,6 +113,8 @@ Usage:
   .\$scriptName
   .\$scriptName -Port COM6 [options]
   .\$scriptName -Board C3 -Port COM7 [options]
+  .\$scriptName -SoftApProbe -Port COM6 [options]
+  .\$scriptName -SketchPath <path> -Board C3 -Port COM6 [options]
   .\$scriptName -p COM6 [options]
 
 Purpose:
@@ -80,7 +123,7 @@ Purpose:
   Default board: ESP32-S3 SuperMini. Default port: COM6.
 
 Options:
-  -BoardType, -Board, -Target <S3|C3>
+  -BoardType, -Board, -Target <S3|C3|C3_LUAOS>
                      Select the target board. Default: S3
   -Port, -p <COM>    Target serial port, for example COM6. Default: COM6
   -Baud, -b <baud>   Serial monitor baud rate. Default: 115200
@@ -89,6 +132,10 @@ Options:
   -Monitor, -m       Only open the serial monitor; do not compile or upload
   -Dtr, -d           Assert DTR while monitoring. Default: off
   -Rts, -r           Assert RTS while monitoring. Default: off
+  -SoftApProbe, -sap Build/upload the temporary minimal C3 SoftAP probe sketch
+                     from %TEMP%\sms_softap_minimal_test. Defaults board to C3.
+  -SketchPath, -Sketch <path>
+                     Build/upload a custom sketch folder or .ino file
   -Notify, -n        Force local notification on completion/failure
   -NoNotify, -nn     Do not show the completion/failure notification
   -Help, -h, -?      Show this help
@@ -101,7 +148,10 @@ Examples:
       Compile, upload to COM6, then open the interactive timestamped serial monitor.
 
   .\$scriptName -Board C3 -Port COM7
-      Compile the ESP32-C3 firmware, upload it to COM7, then open the monitor.
+      Compile the ESP32-C3 SuperMini firmware, upload it to COM7, then open the monitor.
+
+  .\$scriptName -Board C3_LUAOS -Port COM7
+      Compile for LuatOS ESP32C3-CORE board, upload it to COM7, then open the monitor.
 
   .\$scriptName -p COM6 -c
       Same as -Port/-Clean, but with the short aliases for faster typing.
@@ -114,6 +164,13 @@ Examples:
 
   .\$scriptName -Monitor -Port COM6
       Open only the interactive timestamped serial monitor. No compile or upload.
+
+  .\$scriptName -SoftApProbe -Port COM6
+      Compile and upload the minimal C3 SoftAP probe sketch, then open the monitor.
+      Use this to check whether the board can broadcast C3-AP-PROBE outside this project.
+
+  .\$scriptName -SketchPath "$env:TEMP\sms_softap_minimal_test" -Board C3 -Port COM6
+      Compile and upload a custom sketch directory. Useful for one-off hardware probes.
 
   .\$scriptName -Port COM6 -NoNotify
       Compile, upload, and monitor without the local completion/failure notification.
@@ -398,7 +455,8 @@ function Get-CompileUnitCount {
     return $null
 }
 
-Write-Host ("=== Compile firmware ({0}) ===" -f $BoardShortName) -ForegroundColor Green
+Write-Host ("=== Compile {0} ({1}) ===" -f $SketchDisplayName, $BoardShortName) -ForegroundColor Green
+Write-Host ("Sketch: {0}" -f $SketchDir) -ForegroundColor DarkGray
 
 $totalCompileUnits = Get-CompileUnitCount $compileArgs
 if ($totalCompileUnits) {
@@ -447,7 +505,7 @@ if ($exit -ne 0) {
 }
 Write-Host ("Compile complete. Compiled {0} files. Full log: {1}" -f $count, $logFile) -ForegroundColor Green
 
-Write-Host ("`n=== Upload {0} to {1} ===" -f $BoardShortName, $Port) -ForegroundColor Green
+Write-Host ("`n=== Upload {0} ({1}) to {2} ===" -f $SketchDisplayName, $BoardShortName, $Port) -ForegroundColor Green
 & arduino-cli upload -p $Port --fqbn $Fqbn $SketchDir
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Upload failed." -ForegroundColor Red
@@ -455,7 +513,7 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 Write-Host "Upload complete." -ForegroundColor Green
-Send-LocalNotification -Title ("SMS Forwarding {0} upload complete" -f $BoardShortName) -Message "Firmware uploaded to $Port successfully." -Level Success
+Send-LocalNotification -Title ("SMS Forwarding {0} upload complete" -f $BoardShortName) -Message "$SketchDisplayName uploaded to $Port successfully." -Level Success
 
 if (-not $NoMonitor) {
     Start-Sleep -Milliseconds 800

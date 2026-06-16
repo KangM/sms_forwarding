@@ -16,6 +16,7 @@ enum SystemLogModule {
   LOG_MODULE_PUSH,
   LOG_MODULE_SMS,
   LOG_MODULE_MODEM,
+  LOG_MODULE_NETDIAG,
   LOG_MODULE_SERIAL,
 };
 
@@ -29,6 +30,7 @@ const size_t SYSTEM_LOG_FLASH_MAX_BYTES = 65536;
 const char* const SYSTEM_LOG_FLASH_PATH = "/syslog.log";
 const char* const SYSTEM_LOG_FLASH_PREV_PATH = "/syslog.prev.log";
 const size_t SYSTEM_LOG_FLASH_RESERVE_ERROR_CONTEXT_BYTES = 24576;
+const long SYSTEM_LOG_LOCAL_TIME_OFFSET_SEC = 8L * 3600L;
 bool systemLogSerialIncludeTime = false;
 
 bool systemLogFlashReady = false;
@@ -72,6 +74,7 @@ const char* systemLogModuleText(SystemLogModule module) {
     case LOG_MODULE_PUSH: return "PUSH";
     case LOG_MODULE_SMS: return "SMS";
     case LOG_MODULE_MODEM: return "MODEM";
+    case LOG_MODULE_NETDIAG: return "NETDIAG";
     case LOG_MODULE_SERIAL: return "SERIAL";
     default: return "UNKNOWN";
   }
@@ -113,8 +116,9 @@ String formatSystemLogEntryFromUptime(unsigned long uptimeMs,
 String systemLogRealTimeText(time_t epochSec) {
   if (epochSec < 100000) return "";
 
+  time_t localEpochSec = epochSec + SYSTEM_LOG_LOCAL_TIME_OFFSET_SEC;
   struct tm timeInfo;
-  if (gmtime_r(&epochSec, &timeInfo) == nullptr) return "";
+  if (gmtime_r(&localEpochSec, &timeInfo) == nullptr) return "";
 
   char buf[24];
   strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeInfo);

@@ -6,6 +6,49 @@ void blink_short(unsigned long gap_time = 500) {
   ledDelay(gap_time);
 }
 
+String modemLogEscaped(const String& resp) {
+  String out = "";
+  size_t limit = resp.length();
+  if (limit > 160) limit = 160;
+
+  for (size_t i = 0; i < limit; i++) {
+    uint8_t c = (uint8_t)resp.charAt(i);
+    if (c == '\r') {
+      out += "\\r";
+    } else if (c == '\n') {
+      out += "\\n";
+    } else if (c == '\t') {
+      out += "\\t";
+    } else if (c >= 32 && c <= 126) {
+      out += (char)c;
+    } else {
+      char buf[5];
+      snprintf(buf, sizeof(buf), "\\x%02X", c);
+      out += buf;
+    }
+  }
+
+  if (resp.length() > limit) out += "...";
+  return out;
+}
+
+String modemLogHexPreview(const String& resp) {
+  String out = "";
+  size_t limit = resp.length();
+  if (limit > 48) limit = 48;
+
+  for (size_t i = 0; i < limit; i++) {
+    char buf[4];
+    snprintf(buf, sizeof(buf), "%02X", (uint8_t)resp.charAt(i));
+    if (i > 0) out += " ";
+    out += buf;
+  }
+
+  if (resp.length() > limit) out += " ...";
+  if (out.length() == 0) out = "<empty>";
+  return out;
+}
+
 bool sendATandWaitOK(const char* cmd, unsigned long timeout) {
   while (Serial1.available()) Serial1.read();
   Serial1.println(cmd);
@@ -15,10 +58,26 @@ bool sendATandWaitOK(const char* cmd, unsigned long timeout) {
     while (Serial1.available()) {
       char c = Serial1.read();
       resp += c;
-      if (resp.indexOf("OK") >= 0) return true;
-      if (resp.indexOf("ERROR") >= 0) return false;
+      if (resp.indexOf("OK") >= 0) {
+        return true;
+      }
+      if (resp.indexOf("ERROR") >= 0) {
+        systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_MODEM,
+                            "AT error cmd=" + String(cmd) +
+                              " elapsedMs=" + String(millis() - start) +
+                              " bytes=" + String(resp.length()) +
+                              " resp=\"" + modemLogEscaped(resp) + "\"" +
+                              " hex=" + modemLogHexPreview(resp));
+        return false;
+      }
     }
   }
+  systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_MODEM,
+                      "AT timeout cmd=" + String(cmd) +
+                        " timeoutMs=" + String(timeout) +
+                        " bytes=" + String(resp.length()) +
+                        " resp=\"" + modemLogEscaped(resp) + "\"" +
+                        " hex=" + modemLogHexPreview(resp));
   return false;
 }
 
