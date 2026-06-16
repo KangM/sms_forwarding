@@ -2,12 +2,13 @@
 
 这是一个基于 ESP32 SuperMini 和 4G 短信模组的短信转发器。设备通过 UART 控制蜂窝模组接收短信，再通过 WiFi 把短信转发到邮箱、HTTP 接口或常见机器人推送服务，同时提供一个 Web 管理页面用于配置、调试和排障。
 
-当前仓库已经支持两套主控板：
+当前仓库已经支持三套主控板：
 
 - `ESP32-S3 SuperMini`
 - `ESP32-C3 SuperMini`
+- `合宙 ESP32C3-CORE`（经典款 CH343 串口版本）
 
-默认编译目标是 `ESP32-S3 SuperMini`。如需切换到 C3，需要在构建参数中定义 `SMS_BOARD_C3`，或直接使用仓库里的脚本参数。
+默认编译目标是 `ESP32-S3 SuperMini`。如需切换到 C3 或合宙 C3，需要在构建参数中定义对应宏，或直接使用仓库里的脚本参数。
 
 ## 主要功能
 
@@ -32,7 +33,7 @@
 
 | 硬件 | 建议 | 说明 |
 | --- | --- | --- |
-| 主控开发板 | ESP32-S3 SuperMini 或 ESP32-C3 SuperMini | 当前仓库两者都支持，默认以 S3 为主 |
+| 主控开发板 | ESP32-S3 SuperMini / ESP32-C3 SuperMini / 合宙 ESP32C3-CORE | 当前仓库三者都支持，默认以 S3 为主 |
 | 蜂窝模组 | ML307R-DC 或其它支持 AT 指令的 4G 短信模组 | 需要支持 UART、PDU 模式、短信到达上报 |
 | 4G 天线 | 与模组接口匹配 | 没有天线会影响驻网和短信收发 |
 | Nano SIM 卡 | 可正常收发短信的卡 | 先用手机验证短信功能正常 |
@@ -106,6 +107,39 @@
 - C3 板载单色 LED 在 `GPIO8`
 - 当前代码里的 C3 就是这套接法，不需要你再自己猜引脚
 
+### 方案三：合宙 ESP32C3-CORE（经典款 CH343 版本）
+
+默认宏：
+
+```cpp
+#define SMS_BOARD_C3_LUAOS
+```
+
+默认引脚：
+
+```cpp
+#define TXD 0
+#define RXD 1
+#define MODEM_EN_PIN 5
+```
+
+接线表：
+
+| 合宙 ESP32C3-CORE | 4G 模组 | 说明 |
+| --- | --- | --- |
+| IO00 / GPIO0 | RX | 向模组发送 AT 指令 |
+| IO01 / GPIO1 | TX | 接收模组响应和短信上报 |
+| IO05 / GPIO5 | EN | 控制模组断电/上电 |
+| 5V | 5V / VCC | 模组供电 |
+| GND | GND | 必须共地 |
+
+补充说明：
+
+- 合宙 C3-CORE 板载 D4 LED 在 `GPIO12`（高电平点亮），D5 在 `GPIO13`
+- **务必避开 GPIO20/GPIO21**：经典款板子这两脚在 PCB 上连接了 CH343 USB 转串口芯片（UART0），如果接到模组上，AT 命令会通过 CH343 泄露到电脑串口
+- 模组通信改用 GPIO0/GPIO1（ESP32-C3 默认 UART1 引脚），与 CH343 完全隔离
+- **FlashMode 必须设为 `dio`**：合宙板使用外置 SPI FLASH（紫光/普冉），不能用默认 QIO 模式
+
 ### 通用接线注意事项
 
 - UART 必须交叉连接：`TX -> RX`，`RX -> TX`
@@ -161,12 +195,24 @@ code/code.ino
 | Partition Scheme | `Huge APP` |
 | Upload Speed | `921600`，不稳就降 |
 
+#### 合宙 ESP32C3-CORE
+
+| 选项 | 推荐值 |
+| --- | --- |
+| Board | `AirM2M CORE ESP32C3` 或 `ESP32C3 Dev Module` |
+| USB CDC On Boot | `Enabled` |
+| Flash Mode | `DIO`（外置 FLASH，必须） |
+| Flash Size | `4MB (32Mb)` |
+| Partition Scheme | `Huge APP` |
+| Upload Speed | `921600`，不稳就降 |
+
 ### 5. 编译宏
 
 如果你直接在 Arduino IDE 里编译：
 
 - S3：默认即可
-- C3：需要额外定义 `SMS_BOARD_C3`
+- C3（SuperMini）：需要额外定义 `SMS_BOARD_C3`
+- 合宙 C3-CORE：需要额外定义 `SMS_BOARD_C3_LUAOS`
 
 如果你的 IDE 不方便加宏，建议直接使用下面的 PowerShell 脚本。
 
@@ -195,6 +241,7 @@ code/code.ino
 ```powershell
 .\build-flash-monitor-s3.ps1 -Port COM6
 .\build-flash-monitor-s3.ps1 -Board C3 -Port COM7
+.\build-flash-monitor-s3.ps1 -Board C3_LUAOS -Port COM7
 .\build-flash-monitor-s3.ps1 -Board C3 -Port COM7 -Clean
 .\build-flash-monitor-s3.ps1 -Monitor -Port COM6
 .\build-flash-monitor-s3.ps1 -Help
