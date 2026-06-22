@@ -260,52 +260,33 @@ void appendLatestSmsListEntry(const SmsListEntry& entry, int limit, SmsListEntry
 bool collectSmsEntriesFromCmgl(int limit, SmsListEntry entries[], int& entryCount, int& scannedCount) {
   entryCount = 0;
   scannedCount = 0;
-  while (Serial1.available()) Serial1.read();
-  Serial1.println("AT+CMGL=4");
 
-  unsigned long start = millis();
-  String line = "";
-  bool lineOverflow = false;
-
-  while (millis() - start < 15000) {
-    while (Serial1.available()) {
-      char c = Serial1.read();
-      if (c == '\r') continue;
-
-      if (c == '\n') {
-        line.trim();
-        if (line.length() > 0) {
-          if (line == "OK") {
-            Serial.println("CMGL索引扫描完成，已扫描数量: " + String(scannedCount) + "，保留数量: " + String(entryCount));
-            return true;
-          }
-          if (line.indexOf("ERROR") >= 0) {
-            Serial.println("CMGL索引扫描失败: " + line);
-            return false;
-          }
-          if (line.startsWith("+CMGL:")) {
-            SmsListEntry entry;
-            entry.index = getCsvField(line, 0).toInt();
-            entry.status = getCsvField(line, 1).toInt();
-            entry.tpduLength = getCsvField(line, 3).toInt();
-            if (entry.index > 0) {
-              scannedCount++;
-              appendLatestSmsListEntry(entry, limit, entries, entryCount);
-            }
-          }
-        }
-        line = "";
-        lineOverflow = false;
-      } else if (!lineOverflow) {
-        if (line.length() < SERIAL_BUFFER_SIZE - 1) {
-          line += c;
-        } else {
-          lineOverflow = true;
-          line = "";
+  String resp = sendATCommand("AT+CMGL=4", 15000);
+  int lineStart = 0;
+  for (int i = 0; i <= resp.length(); i++) {
+    if (i == resp.length() || resp.charAt(i) == '\n') {
+      String line = resp.substring(lineStart, i);
+      line.trim();
+      if (line == "OK") {
+        Serial.println("CMGL索引扫描完成，已扫描数量: " + String(scannedCount) + "，保留数量: " + String(entryCount));
+        return true;
+      }
+      if (line.indexOf("ERROR") >= 0) {
+        Serial.println("CMGL索引扫描失败: " + line);
+        return false;
+      }
+      if (line.startsWith("+CMGL:")) {
+        SmsListEntry entry;
+        entry.index = getCsvField(line, 0).toInt();
+        entry.status = getCsvField(line, 1).toInt();
+        entry.tpduLength = getCsvField(line, 3).toInt();
+        if (entry.index > 0) {
+          scannedCount++;
+          appendLatestSmsListEntry(entry, limit, entries, entryCount);
         }
       }
+      lineStart = i + 1;
     }
-    delay(1);
   }
 
   Serial.println("CMGL索引扫描超时，已扫描数量: " + String(scannedCount) + "，保留数量: " + String(entryCount));

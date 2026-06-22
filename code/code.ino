@@ -66,6 +66,8 @@ void forceWiFiFullReset(const char* reason);
 void setupWiFiEventLogging();
 void printSerialConsolePerf();
 
+#include "modem_at.h"
+
 #include "at_command.h"
 
 #include "web_tool_handlers.h"
@@ -105,17 +107,15 @@ void setup() {
                       "USB serial console ready; input HELP for commands");
   setupWiFiEventLogging();
 
-  // 模组串口（UART）
-  Serial1.begin(115200, SERIAL_8N1, RXD, TXD);
-  Serial1.setRxBufferSize(SERIAL_BUFFER_SIZE);
+  // 模组串口（UART）由 modem_at 单一管理器独占。
+  modemAtBegin();
 
   // 模组从“干净状态”启动（EN 断电重启 + 清串口噪声）
-  while (Serial1.available()) Serial1.read();
   modemPowerCycle();
-  while (Serial1.available()) Serial1.read();
 
   // 初始化长短信缓存
   initConcatBuffer();
+  modemAtSetUrcCallback(handleModemUrc, nullptr);
 
   // 加载配置
   loadConfig();
@@ -143,7 +143,7 @@ void setup() {
   systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM, "CPMS storage set to " SMS_STORAGE);
 
   //设置短信自动上报
-  while (!sendATandWaitOK("AT+CNMI=2,1,0,0,0", 1000)) {
+  while (!sendATandWaitOK("AT+CNMI=2,2,0,0,0", 1000)) {
     systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_MODEM, "AT+CNMI failed during boot init, retrying");
     blink_short();
   }
@@ -247,6 +247,8 @@ void setup() {
 }
 
 void loop() {
+  modemAtPoll();
+
   unsigned long loopNow = millis();
   unsigned long loopGap = loopNow - loopPerfLastTickMs;
   loopPerfLastTickMs = loopNow;
@@ -272,6 +274,8 @@ void loop() {
 
   // 检查长短信超时
   checkConcatTimeout();
+  pollStoredSmsQueue();
+  pollSmsReceiveWatchdog();
 
   if (perfAutoReportAtMs != 0 && (long)(millis() - perfAutoReportAtMs) >= 0) {
     systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_SERIAL, "performance auto report");
@@ -282,8 +286,8 @@ void loop() {
   // USB 串口命令台：本机诊断命令由 ESP32 处理，AT... 按整行转发给模组
   handleUsbSerialConsole();
 
-  // 检查URC和解析
-  checkSerial1URC();
+  // 检查URC和解析由 modem_at 的 URC 回调处理。
+  modemAtPoll();
 
   // 刷新 LED 状态节奏
   ledTick();

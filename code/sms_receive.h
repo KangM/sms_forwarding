@@ -192,12 +192,88 @@ bool readStoredSmsByIndex(int smsIndex) {
   return messageReady;
 }
 
-// 处理URC和PDU
-void checkSerial1URC() {
+int pendingStoredSmsIndexes[MODEM_AT_QUEUE_LEN];
+int pendingStoredSmsHead = 0;
+int pendingStoredSmsCount = 0;
+bool processingStoredSmsQueue = false;
+
+bool enqueueStoredSmsIndex(int smsIndex) {
+  if (pendingStoredSmsCount >= MODEM_AT_QUEUE_LEN) {
+    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_SMS,
+                     "stored sms queue full index=" + String(smsIndex));
+    return false;
+  }
+  int pos = (pendingStoredSmsHead + pendingStoredSmsCount) % MODEM_AT_QUEUE_LEN;
+  pendingStoredSmsIndexes[pos] = smsIndex;
+  pendingStoredSmsCount++;
+  return true;
+}
+
+unsigned long smsRxWatchdogLastCheckMs = 0;
+unsigned long smsRxWatchdogLastConfigMs = 0;
+unsigned long smsRxWatchdogRecoveries = 0;
+const unsigned long SMS_RX_WATCHDOG_INTERVAL_MS = 10UL * 60UL * 1000UL;
+
+bool smsRxCnmiLooksGood(const String& resp) {
+  int idx = resp.indexOf("+CNMI:");
+  if (idx < 0) return false;
+
+  String line = resp.substring(idx + 6);
+  int lineEnd = line.indexOf('\n');
+  if (lineEnd >= 0) line = line.substring(0, lineEnd);
+  line.trim();
+  return line.startsWith("2,2,");
+}
+
+void reconfigureSmsReceiveMode(const char* reason) {
+  systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SMS,
+                   "sms rx reconfigure reason=" + String(reason));
+  sendATCommand("AT+CMGF=0", 2000);
+  String cnmiResp = sendATCommand("AT+CNMI=2,2,0,0,0", 3000);
+  smsRxWatchdogLastConfigMs = millis();
+  if (cnmiResp.indexOf("OK") >= 0) {
+    smsRxWatchdogRecoveries++;
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS,
+                     "sms rx reconfigure ok recoveries=" + String(smsRxWatchdogRecoveries));
+  } else {
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SMS,
+                     "sms rx reconfigure failed resp=" + cnmiResp);
+  }
+}
+
+void pollSmsReceiveWatchdog() {
+  unsigned long now = millis();
+  if (smsRxWatchdogLastCheckMs != 0 &&
+      now - smsRxWatchdogLastCheckMs < SMS_RX_WATCHDOG_INTERVAL_MS) {
+    return;
+  }
+  if (modemAtIsBusy() || modemAtQueueDepth() > 0 || pendingStoredSmsCount > 0) return;
+
+  smsRxWatchdogLastCheckMs = now;
+  String resp = sendATCommand("AT+CNMI?", 3000);
+  if (!smsRxCnmiLooksGood(resp)) {
+    reconfigureSmsReceiveMode("cnmi_mismatch");
+  } else {
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS, "sms rx watchdog ok");
+  }
+}
+
+void pollStoredSmsQueue() {
+  if (processingStoredSmsQueue || pendingStoredSmsCount <= 0) return;
+  if (modemAtIsBusy()) return;
+
+  processingStoredSmsQueue = true;
+  int smsIndex = pendingStoredSmsIndexes[pendingStoredSmsHead];
+  pendingStoredSmsHead = (pendingStoredSmsHead + 1) % MODEM_AT_QUEUE_LEN;
+  pendingStoredSmsCount--;
+  readStoredSmsByIndex(smsIndex);
+  processingStoredSmsQueue = false;
+}
+
+void processModemUrcLine(const String& line) {
   static enum { IDLE,
                 WAIT_PDU } state = IDLE;
 
-  String line = readSerialLine(Serial1);
   if (line.length() == 0) return;
 
   // 打印到调试串口
@@ -214,7 +290,7 @@ void checkSerial1URC() {
         int smsIndex = line.substring(commaIdx + 1).toInt();
         systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SMS,
                          "urc +CMTI detected index=" + String(smsIndex));
-        readStoredSmsByIndex(smsIndex);
+        enqueueStoredSmsIndex(smsIndex);
       } else {
         systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SMS,
                          "urc +CMTI parse failed line=" + line);
@@ -238,4 +314,14 @@ void checkSerial1URC() {
       state = IDLE;
     }
   }
+}
+
+void handleModemUrc(const String& line, void* userData) {
+  (void)userData;
+  processModemUrcLine(line);
+}
+
+// 兼容旧调用名；真实串口读取已经移到 modem_at。
+void checkSerial1URC() {
+  modemAtPoll();
 }

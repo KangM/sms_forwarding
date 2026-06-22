@@ -56,7 +56,7 @@ static bool ledPhysicalOn = false;
 // 物理点亮/熄灭，屏蔽板间差异
 static void ledRenderOn(const LedStyle& style) {
 #if defined(LED_IS_RGB)
-  rgbLedWrite(LED_BUILTIN, style.r, style.g, style.b);
+  neopixelWrite(LED_BUILTIN, style.r, style.g, style.b);
 #elif defined(LED_ACTIVE_HIGH)
   digitalWrite(LED_BUILTIN, HIGH);  // 合宙板 LED 高电平点亮
 #else
@@ -67,7 +67,7 @@ static void ledRenderOn(const LedStyle& style) {
 
 static void ledRenderOff() {
 #if defined(LED_IS_RGB)
-  rgbLedWrite(LED_BUILTIN, 0, 0, 0);
+  neopixelWrite(LED_BUILTIN, 0, 0, 0);
 #elif defined(LED_ACTIVE_HIGH)
   digitalWrite(LED_BUILTIN, LOW);
 #else

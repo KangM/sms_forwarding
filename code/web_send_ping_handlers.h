@@ -77,9 +77,6 @@ void handlePing() {
   Serial.println("网页端发起Ping请求, 目标: " + host +
                  (packetSize > 0 ? (", 包大小: " + String(packetSize)) : ", 包大小: 默认"));
 
-  // 清空串口缓冲区
-  while (Serial1.available()) Serial1.read();
-
   // 激活PDP上下文（数据连接）
   Serial.println("激活数据连接(CGACT)...");
   String activateResp = sendATCommand("AT+CGACT=1,1", 10000);
@@ -91,8 +88,6 @@ void handlePing() {
     Serial.println("数据连接激活失败，尝试继续执行...");
   }
 
-  // 清空串口缓冲区
-  while (Serial1.available()) Serial1.read();
   delay(500);  // 等待网络稳定
 
   // 发送MPING命令，目标地址超时30秒，ping 1次；可选追加包大小
@@ -100,130 +95,83 @@ void handlePing() {
   if (packetSize > 0) {
     mpingCmd += "," + String(packetSize);
   }
-  Serial1.println(mpingCmd);
-
-  // 等待响应
-  unsigned long start = millis();
-  String resp = "";
+  String resp = sendATCommand(mpingCmd.c_str(), 35000);
   bool gotOK = false;
   bool gotError = false;
   bool gotPingResult = false;
   String pingResultMsg = "";
 
-  // 等待最多35秒（30秒超时 + 5秒余量）
-  while (millis() - start < 35000) {
-    while (Serial1.available()) {
-      char c = Serial1.read();
-      resp += c;
-      Serial.print(c);  // 调试输出
+  Serial.print(resp);
+  if (resp.indexOf("OK") >= 0) gotOK = true;
+  if (resp.indexOf("+CME ERROR") >= 0 || resp.indexOf("ERROR") >= 0) {
+    gotError = true;
+    pingResultMsg = "模组返回错误";
+  }
 
-      // 检查是否收到OK
-      if (resp.indexOf("OK") >= 0 && !gotOK) {
-        gotOK = true;
-      }
+  int mpingIdx = resp.indexOf("+MPING:");
+  if (mpingIdx >= 0) {
+    int lineEnd = resp.indexOf('\n', mpingIdx);
+    if (lineEnd < 0) lineEnd = resp.length();
+    String mpingLine = resp.substring(mpingIdx, lineEnd);
+    mpingLine.trim();
+    Serial.println("收到MPING结果: " + mpingLine);
 
-      // 检查是否收到ERROR
-      if (resp.indexOf("+CME ERROR") >= 0 || resp.indexOf("ERROR") >= 0) {
-        gotError = true;
-        pingResultMsg = "模组返回错误";
-        break;
-      }
+    int colonIdx = mpingLine.indexOf(':');
+    if (colonIdx >= 0) {
+      String params = mpingLine.substring(colonIdx + 1);
+      params.trim();
+      int commaIdx = params.indexOf(',');
+      String resultStr = commaIdx >= 0 ? params.substring(0, commaIdx) : params;
+      resultStr.trim();
+      int result = resultStr.toInt();
+      gotPingResult = true;
 
-      // 检查是否收到Ping结果URC
-      // 成功格式: +MPING: 1,8.8.8.8,32,xxx,xxx
-      // 失败格式: +MPING: 2 或其他
-      int mpingIdx = resp.indexOf("+MPING:");
-      if (mpingIdx >= 0) {
-        // 找到换行符确定完整的一行
-        int lineEnd = resp.indexOf('\n', mpingIdx);
-        if (lineEnd >= 0) {
-          String mpingLine = resp.substring(mpingIdx, lineEnd);
-          mpingLine.trim();
-          Serial.println("收到MPING结果: " + mpingLine);
-
-          // 解析结果
-          // +MPING: <result>[,<ip>,<packet_len>,<time>,<ttl>]
-          int colonIdx = mpingLine.indexOf(':');
-          if (colonIdx >= 0) {
-            String params = mpingLine.substring(colonIdx + 1);
-            params.trim();
-
-            // 获取第一个参数（result）
-            int commaIdx = params.indexOf(',');
-            String resultStr;
-            if (commaIdx >= 0) {
-              resultStr = params.substring(0, commaIdx);
+      bool pingSuccess = (result == 0 || result == 1) || (params.indexOf(',') >= 0 && params.length() > 5);
+      if (pingSuccess) {
+        int idx1 = params.indexOf(',');
+        if (idx1 >= 0) {
+          String rest = params.substring(idx1 + 1);
+          String ip;
+          int idx2;
+          if (rest.startsWith("\"")) {
+            int quoteEnd = rest.indexOf('\"', 1);
+            if (quoteEnd >= 0) {
+              ip = rest.substring(1, quoteEnd);
+              idx2 = rest.indexOf(',', quoteEnd);
             } else {
-              resultStr = params;
+              idx2 = rest.indexOf(',');
+              ip = rest.substring(0, idx2);
             }
-            resultStr.trim();
-            int result = resultStr.toInt();
+          } else {
+            idx2 = rest.indexOf(',');
+            ip = rest.substring(0, idx2);
+          }
 
-            gotPingResult = true;
-
-            // result=0或1都表示成功（不同模组可能返回不同值）
-            // 如果有完整的响应参数（IP、时间等），也视为成功
-            bool pingSuccess = (result == 0 || result == 1) || (params.indexOf(',') >= 0 && params.length() > 5);
-
-            if (pingSuccess) {
-              // 成功，解析详细信息
-              // 格式: 0/1,"8.8.8.8",16,时间,TTL
-              int idx1 = params.indexOf(',');
-              if (idx1 >= 0) {
-                String rest = params.substring(idx1 + 1);
-                // 处理IP地址（可能带引号）
-                String ip;
-                int idx2;
-                if (rest.startsWith("\"")) {
-                  // 带引号的IP
-                  int quoteEnd = rest.indexOf('\"', 1);
-                  if (quoteEnd >= 0) {
-                    ip = rest.substring(1, quoteEnd);
-                    idx2 = rest.indexOf(',', quoteEnd);
-                  } else {
-                    idx2 = rest.indexOf(',');
-                    ip = rest.substring(0, idx2);
-                  }
-                } else {
-                  idx2 = rest.indexOf(',');
-                  ip = rest.substring(0, idx2);
-                }
-
-                if (idx2 >= 0) {
-                  rest = rest.substring(idx2 + 1);
-                  int idx3 = rest.indexOf(',');  // packet_len后
-                  if (idx3 >= 0) {
-                    rest = rest.substring(idx3 + 1);
-                    int idx4 = rest.indexOf(',');  // time后
-                    String timeStr, ttlStr;
-                    if (idx4 >= 0) {
-                      timeStr = rest.substring(0, idx4);
-                      ttlStr = rest.substring(idx4 + 1);
-                    } else {
-                      timeStr = rest;
-                      ttlStr = "N/A";
-                    }
-                    timeStr.trim();
-                    ttlStr.trim();
-                    pingResultMsg = "目标: " + ip + ", 延迟: " + timeStr + "ms, TTL: " + ttlStr;
-                  }
-                }
+          if (idx2 >= 0) {
+            rest = rest.substring(idx2 + 1);
+            int idx3 = rest.indexOf(',');
+            if (idx3 >= 0) {
+              rest = rest.substring(idx3 + 1);
+              int idx4 = rest.indexOf(',');
+              String timeStr, ttlStr;
+              if (idx4 >= 0) {
+                timeStr = rest.substring(0, idx4);
+                ttlStr = rest.substring(idx4 + 1);
+              } else {
+                timeStr = rest;
+                ttlStr = "N/A";
               }
-              if (pingResultMsg.length() == 0) {
-                pingResultMsg = "Ping成功";
-              }
-            } else {
-              // 失败
-              pingResultMsg = "Ping超时或目标不可达 (错误码: " + String(result) + ")";
+              timeStr.trim();
+              ttlStr.trim();
+              pingResultMsg = "目标: " + ip + ", 延迟: " + timeStr + "ms, TTL: " + ttlStr;
             }
-            break;
           }
         }
+        if (pingResultMsg.length() == 0) pingResultMsg = "Ping成功";
+      } else {
+        pingResultMsg = "Ping超时或目标不可达 (错误码: " + String(result) + ")";
       }
     }
-
-    if (gotError || gotPingResult) break;
-    delay(10);
   }
 
   Serial.println("\nPing操作完成");

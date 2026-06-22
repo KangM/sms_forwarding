@@ -30,53 +30,16 @@ bool sendSMS(const char* phoneNumber, const char* message) {
   String cmgsCmd = "AT+CMGS=";
   cmgsCmd += pduLen;
 
-  while (Serial1.available()) Serial1.read();
-  Serial1.println(cmgsCmd);
-
-  // 等待 > 提示符
-  unsigned long start = millis();
-  bool gotPrompt = false;
-  while (millis() - start < 5000) {
-    if (Serial1.available()) {
-      char c = Serial1.read();
-      if (c == '>') {
-        gotPrompt = true;
-        break;
-      }
-    }
-  }
-
-  if (!gotPrompt) {
-    systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_MODEM,
-                     "send sms missing prompt phone=" + String(phoneNumber));
-    return false;
-  }
-
-  // 发送PDU数据
-  Serial1.print(pdu.getSMS());
-  Serial1.write(0x1A);  // Ctrl+Z 结束
-
-  // 等待响应
-  start = millis();
   String resp = "";
-  while (millis() - start < 30000) {
-    while (Serial1.available()) {
-      char c = Serial1.read();
-      resp += c;
-      if (resp.indexOf("OK") >= 0) {
-        systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM,
-                         "send sms ok phone=" + String(phoneNumber));
-        return true;
-      }
-      if (resp.indexOf("ERROR") >= 0) {
-        systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_MODEM,
-                         "send sms modem error phone=" + String(phoneNumber));
-        return false;
-      }
-    }
+  bool ok = modemAtSendPduSmsSync(String(phoneNumber), String(pdu.getSMS()), pduLen, 30000, resp);
+  if (ok) {
+    systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_MODEM,
+                     "send sms ok phone=" + String(phoneNumber));
+    return true;
   }
   systemLogPrintln(LOG_LEVEL_ERROR, LOG_MODULE_MODEM,
-                   "send sms timeout phone=" + String(phoneNumber));
+                   "send sms failed phone=" + String(phoneNumber) +
+                   " resp=" + resp);
   return false;
 }
 
@@ -99,9 +62,6 @@ void resetModule() {
   systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_MODEM, "reset module start");
 
   modemPowerCycle();
-
-  // 清掉上电噪声/残留
-  while (Serial1.available()) Serial1.read();
 
   // 硬重启后做 AT 握手确认（最多等 10 秒）
   bool ok = false;
