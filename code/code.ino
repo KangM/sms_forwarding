@@ -167,7 +167,9 @@ void setup() {
 
   ledSetState(LED_WIFI_CONNECTING);
   bool wifiConnected = connectWiFiOrStartConfigPortal();
-  printConfigValidationResult("上电加载");
+  if (!wifiConfigPortalActive) {
+    printConfigValidationResult("上电加载");
+  }
 
   // NTP时间同步（获取UTC时间）
   if (wifiConnected) {
@@ -185,6 +187,8 @@ void setup() {
     } else {
       systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SYSTEM, "NTP sync failed, using device time");
     }
+  } else if (wifiConfigPortalActive) {
+    // 配网模式下不做对时。
   } else {
     systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SYSTEM, "skip NTP sync: WiFi not connected");
   }
@@ -194,6 +198,7 @@ void setup() {
   server.on("/save", HTTP_POST, handleSave);
   server.on("/tools", handleToolsPage);
   server.on("/wifi", handleWiFiConfigPage);
+  server.on("/wifiscan", handleWiFiScan);
   server.on("/wifisave", HTTP_POST, handleWiFiConfigSave);
   server.on("/wificlear", HTTP_POST, handleWiFiConfigClear);
   server.on("/generate_204", handleCaptivePortalRedirect);
@@ -238,12 +243,18 @@ void setup() {
     sendEmailNotification(subject.c_str(), body.c_str());
   } else if (wifiConnected && configValid && !config.startupMailEnabled) {
     systemLogPrintln(LOG_LEVEL_INFO, LOG_MODULE_SYSTEM, "startup notification disabled, skip startup email");
+  } else if (wifiConfigPortalActive) {
+    // 配网模式下不发启动邮件。
   } else if (!wifiConnected) {
     systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_SYSTEM, "skip startup email: WiFi not connected");
   }
 
   // 启动网络后台任务：异步处理推送、邮件和掉线检测，避免阻塞主循环
-  startNetTask();
+  if (wifiConfigPortalActive) {
+    // 配网模式下不启动网络后台任务。
+  } else {
+    startNetTask();
+  }
 }
 
 void loop() {
@@ -275,7 +286,9 @@ void loop() {
   // 检查长短信超时
   checkConcatTimeout();
   pollStoredSmsQueue();
-  pollSmsReceiveWatchdog();
+  if (!wifiConfigPortalActive) {
+    pollSmsReceiveWatchdog();
+  }
 
   if (perfAutoReportAtMs != 0 && (long)(millis() - perfAutoReportAtMs) >= 0) {
     systemLogSerialOnly(LOG_LEVEL_INFO, LOG_MODULE_SERIAL, "performance auto report");

@@ -1,11 +1,12 @@
 # build-flash-monitor-s3.ps1
 # All-in-one ESP32 SuperMini helper: compile -> upload -> interactive timestamped serial monitor.
-# Default target is ESP32-S3. Use -Board C3 or -Board C3_LUAOS to target C3 variants.
+# Default target is ESP32-S3. Use -Board C3, C3_LUAOS, or C3_LUAOS_NO_CH343 to target C3 variants.
 #
 # Examples:
 #   .\build-flash-monitor-s3.ps1
 #   .\build-flash-monitor-s3.ps1 -Port COM6
 #   .\build-flash-monitor-s3.ps1 -Board C3_LUAOS -Port COM7
+#   .\build-flash-monitor-s3.ps1 -Board C3_LUAOS_NO_CH343 -Port COM7
 #   .\build-flash-monitor-s3.ps1 -Port COM6 -Clean
 #   .\build-flash-monitor-s3.ps1 -Port COM6 -NoMonitor
 #   .\build-flash-monitor-s3.ps1 -Monitor -Port COM6
@@ -14,7 +15,7 @@
 
 param(
     [Alias("Board", "Target")]
-    [ValidateSet("S3", "C3", "C3_LUAOS")]
+    [ValidateSet("S3", "C3", "C3_LUAOS", "C3_LUAOS_NO_CH343")]
     [string]$BoardType = "S3",
     [Alias("p")]
     [string]$Port = "COM6",
@@ -70,6 +71,13 @@ $boardConfigs = @{
         BoardFlag = "-DSMS_BOARD_C3_LUAOS"
         LogSuffix = "c3-luaos"
     }
+    "C3_LUAOS_NO_CH343" = @{
+        Name = "LuatOS ESP32C3-CORE (USB CDC)"
+        ShortName = "C3_LUAOS_NO_CH343"
+        Fqbn = "esp32:esp32:esp32c3:UploadSpeed=921600,CDCOnBoot=cdc,CPUFreq=160,FlashFreq=80,FlashMode=dio,FlashSize=4M,PartitionScheme=huge_app,DebugLevel=none,EraseFlash=all,JTAGAdapter=default,ZigbeeMode=default"
+        BoardFlag = "-DSMS_BOARD_C3_LUAOS"
+        LogSuffix = "c3-luaos-no-ch343"
+    }
     "C3" = @{
         Name = "ESP32-C3 SuperMini"
         ShortName = "C3"
@@ -123,7 +131,7 @@ Purpose:
   Default board: ESP32-S3 SuperMini. Default port: COM6.
 
 Options:
-  -BoardType, -Board, -Target <S3|C3|C3_LUAOS>
+  -BoardType, -Board, -Target <S3|C3|C3_LUAOS|C3_LUAOS_NO_CH343>
                      Select the target board. Default: S3
   -Port, -p <COM>    Target serial port, for example COM6. Default: COM6
   -Baud, -b <baud>   Serial monitor baud rate. Default: 115200
@@ -152,6 +160,9 @@ Examples:
 
   .\$scriptName -Board C3_LUAOS -Port COM7
       Compile for LuatOS ESP32C3-CORE board, upload it to COM7, then open the monitor.
+
+  .\$scriptName -Board C3_LUAOS_NO_CH343 -Port COM7
+      Compile for LuatOS ESP32C3-CORE without CH343, with USB CDC enabled.
 
   .\$scriptName -p COM6 -c
       Same as -Port/-Clean, but with the short aliases for faster typing.

@@ -1,5 +1,24 @@
 #pragma once
 
+#define WIFI_SCAN_CACHE_MAX 20
+
+struct WiFiScanCacheEntry {
+  String ssid;
+  int32_t rssi;
+  wifi_auth_mode_t encryption;
+};
+
+WiFiScanCacheEntry wifiScanCache[WIFI_SCAN_CACHE_MAX];
+int wifiScanCacheCount = 0;
+bool wifiScanCacheValid = false;
+bool wifiScanRunning = false;
+unsigned long wifiScanStartedAtMs = 0;
+unsigned long wifiScanDeferredStartAtMs = 0;
+const unsigned long WIFI_SCAN_AFTER_PORTAL_DELAY_MS = 6000;
+
+bool startWiFiScanAsync(bool force);
+void pollWiFiScanCache();
+
 #define WIFI_PROVISION_NAMESPACE "wifi_cfg"
 #define WIFI_PROVISION_DNS_PORT 53
 
@@ -40,11 +59,17 @@ void startWiFiConfigPortal() {
                       LOG_MODULE_WIFI,
                       String(ok ? "config portal started" : "config portal start failed") +
                         " ap=" + apSsid + " ip=" + WiFi.softAPIP().toString());
+  if (ok) {
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_WIFI, "已进入配网模式：请用手机或电脑连接 WiFi 热点 " + apSsid);
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_WIFI, "连接后打开浏览器访问 http://" + WiFi.softAPIP().toString() + "/wifi 配置 WiFi");
+    wifiScanDeferredStartAtMs = millis() + WIFI_SCAN_AFTER_PORTAL_DELAY_MS;
+  }
 }
 
 void processWiFiConfigPortalDns() {
   if (wifiConfigPortalActive) {
     dnsServer.processNextRequest();
+    pollWiFiScanCache();
   }
 }
 
@@ -151,6 +176,7 @@ bool connectWiFiOrStartConfigPortal() {
 
   if (ssid.length() == 0) {
     systemLogSerialOnly(LOG_LEVEL_WARN, LOG_MODULE_WIFI, "no saved WiFi credentials, entering config portal");
+    systemLogPrintln(LOG_LEVEL_WARN, LOG_MODULE_WIFI, "未保存 WiFi 信息，设备将启动配网页面");
   }
 
   startWiFiConfigPortal();
@@ -400,32 +426,133 @@ void wifiRoamWatchdog() {
   WiFi.scanDelete();
 }
 
-String scannedWiFiOptions(const String& selectedSsid) {
-  String options = "<option value=''>选择扫描到的WiFi，或手动输入</option>";
-  int count = WiFi.scanNetworks(false, true);
+bool startWiFiScanAsync(bool force) {
+  if (wifiScanRunning) return true;
+  if (!force && wifiScanCacheValid) return true;
 
-  if (count <= 0) {
-    options += "<option value=''>未扫描到WiFi</option>";
-    WiFi.scanDelete();
-    return options;
+  WiFi.scanDelete();
+  int result = WiFi.scanNetworks(true, true);
+  if (result == WIFI_SCAN_FAILED) {
+    wifiScanRunning = false;
+    return false;
   }
 
-  for (int i = 0; i < count; i++) {
-    String ssid = WiFi.SSID(i);
-    if (ssid.length() == 0) continue;
+  wifiScanRunning = true;
+  wifiScanStartedAtMs = millis();
+  return true;
+}
 
-    String security = WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "开放" : "加密";
-    String selected = ssid == selectedSsid ? " selected" : "";
-    options += "<option value='" + htmlEscape(ssid) + "'" + selected + ">";
-    options += htmlEscape(ssid) + " (" + String(WiFi.RSSI(i)) + " dBm, " + security + ")";
-    options += "</option>";
+void pollWiFiScanCache() {
+  if (!wifiScanRunning && wifiScanDeferredStartAtMs != 0 &&
+      (long)(millis() - wifiScanDeferredStartAtMs) >= 0) {
+    wifiScanDeferredStartAtMs = 0;
+    startWiFiScanAsync(false);
+  }
+
+  if (!wifiScanRunning) return;
+
+  int count = WiFi.scanComplete();
+  if (count == WIFI_SCAN_RUNNING) {
+    if (millis() - wifiScanStartedAtMs > 15000) {
+      WiFi.scanDelete();
+      wifiScanRunning = false;
+      wifiScanCacheValid = true;
+      wifiScanCacheCount = 0;
+    }
+    return;
+  }
+
+  wifiScanRunning = false;
+  wifiScanCacheCount = 0;
+
+  if (count > 0) {
+    for (int i = 0; i < count && wifiScanCacheCount < WIFI_SCAN_CACHE_MAX; i++) {
+      String ssid = WiFi.SSID(i);
+      if (ssid.length() == 0) continue;
+
+      bool duplicate = false;
+      for (int j = 0; j < wifiScanCacheCount; j++) {
+        if (wifiScanCache[j].ssid == ssid) {
+          duplicate = true;
+          if (WiFi.RSSI(i) > wifiScanCache[j].rssi) {
+            wifiScanCache[j].rssi = WiFi.RSSI(i);
+            wifiScanCache[j].encryption = WiFi.encryptionType(i);
+          }
+          break;
+        }
+      }
+      if (duplicate) continue;
+
+      wifiScanCache[wifiScanCacheCount].ssid = ssid;
+      wifiScanCache[wifiScanCacheCount].rssi = WiFi.RSSI(i);
+      wifiScanCache[wifiScanCacheCount].encryption = WiFi.encryptionType(i);
+      wifiScanCacheCount++;
+    }
   }
 
   WiFi.scanDelete();
+  wifiScanCacheValid = true;
+}
+
+String scannedWiFiOptions(const String& selectedSsid) {
+  String options = "<option value=''>手动输入 WiFi 名称</option>";
+
+  if (wifiScanRunning) {
+    options += "<option value=''>正在扫描附近 WiFi...</option>";
+    return options;
+  }
+
+  if (!wifiScanCacheValid) {
+    options += "<option value=''>尚无扫描结果，请点击扫描</option>";
+    return options;
+  }
+
+  if (wifiScanCacheCount <= 0) {
+    options += "<option value=''>未扫描到 WiFi，可手动输入</option>";
+    return options;
+  }
+
+  for (int i = 0; i < wifiScanCacheCount; i++) {
+    String security = wifiScanCache[i].encryption == WIFI_AUTH_OPEN ? "开放" : "加密";
+    String selected = wifiScanCache[i].ssid == selectedSsid ? " selected" : "";
+    options += "<option value='" + htmlEscape(wifiScanCache[i].ssid) + "'" + selected + ">";
+    options += htmlEscape(wifiScanCache[i].ssid) + " (" + String(wifiScanCache[i].rssi) + " dBm, " + security + ")";
+    options += "</option>";
+  }
+
   return options;
 }
 
+void handleWiFiScan() {
+  bool refresh = server.arg("refresh") == "1";
+  if (refresh) {
+    startWiFiScanAsync(true);
+  }
+  pollWiFiScanCache();
+
+  String json = "{";
+  json += "\"running\":" + String(wifiScanRunning ? "true" : "false") + ",";
+  json += "\"valid\":" + String(wifiScanCacheValid ? "true" : "false") + ",";
+  json += "\"count\":" + String(wifiScanCacheCount) + ",";
+  json += "\"networks\":[";
+  for (int i = 0; i < wifiScanCacheCount; i++) {
+    if (i > 0) json += ",";
+    json += "{";
+    json += "\"ssid\":\"" + jsonEscape(wifiScanCache[i].ssid) + "\",";
+    json += "\"rssi\":" + String(wifiScanCache[i].rssi) + ",";
+    json += "\"security\":\"" + String(wifiScanCache[i].encryption == WIFI_AUTH_OPEN ? "开放" : "加密") + "\"";
+    json += "}";
+  }
+  json += "]}";
+  server.send(200, "application/json", json);
+}
+
 void handleWiFiConfigPage() {
+  if (wifiScanRunning) {
+    WiFi.scanDelete();
+    wifiScanRunning = false;
+  }
+
   String savedSsid;
   String savedPass;
   bool hasSaved = loadSavedWiFiCredentials(savedSsid, savedPass);
@@ -434,8 +561,15 @@ void handleWiFiConfigPage() {
   String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
   html += "<meta name='viewport' content='width=device-width,initial-scale=1.0'>";
   html += "<title>WiFi配网</title>";
-  html += "<style>body{font-family:Arial,sans-serif;margin:20px;background:#f5f5f5}.box{max-width:460px;margin:0 auto;background:#fff;padding:18px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.12)}label{display:block;margin-top:12px;font-weight:bold}input,select{width:100%;box-sizing:border-box;padding:10px;margin-top:6px;border:1px solid #ccc;border-radius:5px;background:white}button{width:100%;padding:12px;margin-top:16px;border:0;border-radius:5px;background:#2196F3;color:white;font-size:16px}.hint{font-size:12px;color:#666;margin-top:10px;line-height:1.5}</style>";
-  html += "<script>function pickSsid(sel){if(sel.value){document.getElementById('ssid').value=sel.value;}}</script>";
+  html += "<style>body{font-family:Arial,sans-serif;margin:20px;background:#f5f5f5}.box{max-width:460px;margin:0 auto;background:#fff;padding:18px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.12)}label{display:block;margin-top:12px;font-weight:bold}input,select{width:100%;box-sizing:border-box;padding:10px;margin-top:6px;border:1px solid #ccc;border-radius:5px;background:white}button{width:100%;padding:12px;margin-top:16px;border:0;border-radius:5px;background:#2196F3;color:white;font-size:16px}.hint{font-size:12px;color:#666;margin-top:10px;line-height:1.5}.row{display:flex;gap:8px;align-items:center}.row select{flex:1}.row button{width:auto;white-space:nowrap;margin-top:6px;padding:10px 12px;font-size:14px}</style>";
+  html += "<script>";
+  html += "function pickSsid(sel){if(sel.value){document.getElementById('ssid').value=sel.value;}}";
+  html += "function togglePass(){var p=document.getElementById('wifiPass');var b=document.getElementById('passToggle');var show=p.type==='password';p.type=show?'text':'password';b.textContent=show?'隐藏':'显示';}";
+  html += "function setScanText(t){var e=document.getElementById('scanStatus');if(e)e.textContent=t;}";
+  html += "function renderScan(d){var s=document.getElementById('wifiSelect');var cur=document.getElementById('ssid').value;s.innerHTML='<option value=\"\">手动输入 WiFi 名称</option>';if(d.running){s.innerHTML+='<option value=\"\">正在扫描附近 WiFi...</option>';setScanText('正在扫描...');return false;}if(!d.valid){s.innerHTML+='<option value=\"\">尚无扫描结果，请点击刷新</option>';setScanText('尚无扫描结果');return true;}if(!d.networks.length){s.innerHTML+='<option value=\"\">未扫描到 WiFi，可手动输入</option>';setScanText('未扫描到 WiFi');return true;}d.networks.forEach(function(n){var o=document.createElement('option');o.value=n.ssid;o.textContent=n.ssid+' ('+n.rssi+' dBm, '+n.security+')';if(n.ssid===cur)o.selected=true;s.appendChild(o);});setScanText('已扫描到 '+d.networks.length+' 个 WiFi');return true;}";
+  html += "function loadScan(refresh){fetch('/wifiscan'+(refresh?'?refresh=1':''),{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){var done=renderScan(d);if(!done)setTimeout(function(){loadScan(false);},1200);}).catch(function(){setScanText('扫描状态获取失败');});}";
+  html += "window.addEventListener('load',function(){loadScan(false);});";
+  html += "</script>";
   html += "</head><body><div class='box'><h2>WiFi配网</h2>";
   html += "<div class='hint'>当前模式: ";
   if (WiFi.status() == WL_CONNECTED) {
@@ -448,9 +582,10 @@ void handleWiFiConfigPage() {
     html += "<div class='hint'>已保存WiFi: " + htmlEscape(savedSsid) + "</div>";
   }
   html += "<form method='POST' action='/wifisave'>";
-  html += "<label>扫描到的WiFi</label><select onchange='pickSsid(this)'>" + ssidOptions + "</select>";
+  html += "<label>扫描到的WiFi</label><div class='row'><select id='wifiSelect' onchange='pickSsid(this)'>" + ssidOptions + "</select><button type='button' onclick='loadScan(true)'>刷新</button></div>";
+  html += "<div id='scanStatus' class='hint'>页面已加载，可直接手动输入或点击刷新</div>";
   html += "<label>WiFi名称</label><input id='ssid' name='ssid' value='" + htmlEscape(savedSsid) + "' required>";
-  html += "<label>WiFi密码</label><input name='pass' type='password' value=''>";
+  html += "<label>WiFi密码</label><div class='row'><input id='wifiPass' name='pass' type='password' value=''><button id='passToggle' type='button' onclick='togglePass()'>显示</button></div>";
   html += "<button type='submit'>保存并重启</button>";
   html += "</form><div class='hint'>保存后设备会重启并尝试连接新WiFi。忘记密码或连接失败时，会重新开启配网AP。</div>";
   html += "</div></body></html>";
@@ -509,6 +644,10 @@ void handleRootOrWiFiConfig() {
 
 void handleCaptivePortalNotFound() {
   if (wifiConfigPortalActive) {
+    if (server.uri() == "/favicon.ico") {
+      server.send(204, "text/plain", "");
+      return;
+    }
     handleCaptivePortalRedirect();
     return;
   }
