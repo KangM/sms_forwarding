@@ -134,4 +134,15 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body: |
+            ## 固件文件对应开发板
+
+            | 固件文件 | 适用开发板 / 场景 |
+            | --- | --- |
+            | `sms-forwarding-esp32c3.bin` | ESP32-C3 SuperMini |
+            | `sms-forwarding-esp32c3-luaos.bin` | 合宙 LuatOS ESP32C3-CORE，经典 CH343 USB 转串口版本 |
+            | `sms-forwarding-esp32c3-luaos-no-ch343.bin` | 合宙 LuatOS ESP32C3-CORE，无 CH343 / 使用 ESP32-C3 USB CDC |
+            | `sms-forwarding-esp32s3.bin` | ESP32-S3 SuperMini |
+
+            直接烧录对应开发板的 `.bin` 文件即可。
           files: release-assets/*.bin
